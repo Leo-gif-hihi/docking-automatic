@@ -1,0 +1,12 @@
+# Ignore all files
+*
+
+# Allow directories (so Git can find nested scripts if any)
+!*/
+
+# Allow script files
+!*.py
+!*.sh
+
+# Allow the .gitignore file itself
+!.gitignore
