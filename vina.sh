@@ -41,7 +41,7 @@ fi
 echo "Running Vina..."
 vina --receptor "$PROTEIN_PDBQT" --ligand "$LIGAND_PDBQT" \
        --config "$BOX_FILE" \
-       --exhaustiveness=32 $VINA_CPU_ARG --out "$OUT_PDBQT" > "$OUT_LOG"
+       $VINA_CPU_ARG --out "$OUT_PDBQT" > "$OUT_LOG"
 
 echo "Exporting to SDF..."
 mk_export.py "$OUT_PDBQT" -s "$OUT_SDF"

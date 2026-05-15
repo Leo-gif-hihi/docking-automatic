@@ -1,5 +1,6 @@
 import time
-from Bio.PDB import PDBParser
+import os
+from Bio.PDB import PDBParser, PDBIO
 from Bio.PDB.Polypeptide import protein_letters_3to1
 from Bio import Align
 import requests
@@ -31,20 +32,36 @@ def fetch_biolip_data(uniprot_id, max_retries=3):
     """
     Fetches empirical binding data from the BioLiP API for a given UniProt ID.
     Implements exponential backoff to handle rate limits in the form of HTML responses.
+    Caches responses locally to avoid redundant API calls.
     """
+    cache_dir = "biolip_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"{uniprot_id}.txt")
+    
+    if os.path.exists(cache_file):
+        print(f"Loading BioLiP data from cache for UniProt ID: {uniprot_id}")
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            return f.read()
+
     url = f"https://aideepmed.com/BioLiP/qsearch.cgi?uniprot={uniprot_id}&outfmt=txt"
     
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             
             text = response.text
-            
+            #print(text)  # Debug print to check the response content
             # Check for the HTML rate limit trap or explicitly "Too many requests"
             if "Too many requests" in text or text.strip().startswith("<html") or "<html>" in text.lower():
                 print(f"Rate limited by BioLiP for UniProt ID {uniprot_id}. Attempt {attempt + 1}/{max_retries}.")
             else:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    f.write(text)
                 return text
                 
         except requests.exceptions.RequestException as e:
@@ -136,6 +153,30 @@ def align_sequences(biolip_sequence, pdb_atom_sequence):
         
     best_alignment = alignments[0]
     return best_alignment
+
+def calculate_map_identity(best_alignment):
+    """
+    Calculates the sequence identity ignoring gaps.
+    Returns the percentage of matches over total (matches + mismatches).
+    """
+    seq1, seq2 = best_alignment[0], best_alignment[1]
+    
+    matches = 0
+    mismatches = 0
+    
+    for char1, char2 in zip(seq1, seq2):
+        # Ignore gap regions entirely
+        if char1 != '-' and char2 != '-':
+            if char1 == char2:
+                matches += 1
+            else:
+                mismatches += 1
+                
+    total_aligned = matches + mismatches
+    if total_aligned == 0:
+        return 0.0
+        
+    return (matches / total_aligned) * 100.0
 
 def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
     """
@@ -255,6 +296,30 @@ def cluster_and_select_pocket(coords, scores, residue_ids, eps=7.0, min_samples=
     
     return best_coords, best_residue_ids
 
+def calculate_bounding_box(coords, padding=5.0):
+    """
+    Calculates the spatial center and dimensions of the selected pocket in 3D space,
+    adding the user-defined padding.
+    """
+    if len(coords) == 0:
+        return None
+        
+    min_x, min_y, min_z = np.min(coords, axis=0)
+    max_x, max_y, max_z = np.max(coords, axis=0)
+    
+    center_x = (max_x + min_x) / 2
+    center_y = (max_y + min_y) / 2
+    center_z = (max_z + min_z) / 2
+    
+    size_x = (max_x - min_x) + padding
+    size_y = (max_y - min_y) + padding
+    size_z = (max_z - min_z) + padding
+    
+    return {
+        'center_x': center_x, 'center_y': center_y, 'center_z': center_z,
+        'size_x': size_x, 'size_y': size_y, 'size_z': size_z
+    }
+
 def collect_interactive_data(chain_to_uniprot):
     """
     Deduplicates UniProt IDs and fetches BioLiP data for each unique ID.
@@ -269,17 +334,78 @@ def collect_interactive_data(chain_to_uniprot):
     biolip_data = {}
     for uniprot_id in unique_uniprot_ids:
         print(f"Fetching BioLiP data for UniProt ID: {uniprot_id}")
+        
+        # Check if it will hit cache before fetching to know if we need to sleep
+        is_cached = os.path.exists(os.path.join("biolip_cache", f"{uniprot_id}.txt"))
+        
         data = fetch_biolip_data(uniprot_id)
         if data:
             parsed_data = parse_biolip_tsv(data)
             biolip_data[uniprot_id] = parsed_data
-        sleep_time = 10
-        print(f"Sleeping for {sleep_time} seconds before next request...")
-        time.sleep(sleep_time)
+            
+        if not is_cached:
+            sleep_time = 10
+            print(f"Sleeping for {sleep_time} seconds before next API request...")
+            time.sleep(sleep_time)
             
     return biolip_data, uniprot_to_chains
 
-def process_pockets(protein_path):
+def calculate_volume_and_exhaustiveness(box_params):
+    """
+    Calculates grid box volume and determines Vina exhaustiveness scaling.
+    """
+    volume = box_params['size_x'] * box_params['size_y'] * box_params['size_z']
+    exhaustiveness = 25 if volume <= 27000 else 50
+    return volume, exhaustiveness
+
+def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness):
+    """
+    Writes the Vina configuration box file.
+    """
+    import os
+    os.makedirs(box_path, exist_ok=True)
+    box_file = box_path / f"{protein_file.stem}.box.txt"
+    
+    with open(box_file, 'w', encoding='utf-8') as f:
+        f.write(f"center_x = {box_params['center_x']:.3f}\n")
+        f.write(f"center_y = {box_params['center_y']:.3f}\n")
+        f.write(f"center_z = {box_params['center_z']:.3f}\n")
+        f.write(f"size_x = {box_params['size_x']:.3f}\n")
+        f.write(f"size_y = {box_params['size_y']:.3f}\n")
+        f.write(f"size_z = {box_params['size_z']:.3f}\n")
+        f.write(f"exhaustiveness = {exhaustiveness}\n")
+        
+    print(f"Wrote Vina box configuration to {box_file}")
+
+def generate_heatmap_pdb(protein_file, active_residues):
+    """
+    Step 12: Writes BioLiP occurrence scores into the PDB B-factor column.
+    Allows users to visually verify the pipeline's decisions in 3D (e.g., in PyMOL).
+    """
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("protein", protein_file)
+    
+    max_score = max(active_residues.values()) if active_residues else 0
+    
+    for model in structure:
+        for chain in model:
+            cid = chain.get_id()
+            for res in chain:
+                resseq = res.get_id()[1]
+                count = active_residues.get((cid, resseq), 0)
+                # Normalize the occurrence score to 0-100 for the B-factor column
+                norm_score = (count / max_score) * 100.0 if max_score > 0 else 0.0
+                
+                for atom in res:
+                    atom.set_bfactor(norm_score)
+                    
+    io = PDBIO()
+    io.set_structure(structure)
+    heatmap_file = protein_file.with_name(f"{protein_file.stem}_heatmap.pdb")
+    io.save(str(heatmap_file))
+    print(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
+
+def process_pockets(protein_path, box_path):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
     protein_files = list(protein_path.glob("*.pdb"))
     if not protein_files:
@@ -334,6 +460,8 @@ def process_pockets(protein_path):
                     
                     if best_alignment:
                         print(f"Alignment Score: {best_alignment.score}")
+                        identity_pct = calculate_map_identity(best_alignment)
+                        print(f"Map Identity (excluding gaps): {identity_pct:.2f}%")
                         mapped_resseqs = map_binding_residues(best_alignment, entry['binding_residues'], pdb_seq_data)
                         print(f"Successfully mapped {len(mapped_resseqs)} valid 3D coordinates for BioLiP Record {i+1}: {mapped_resseqs}")
                         
@@ -345,6 +473,10 @@ def process_pockets(protein_path):
         active_residues = {k: count for k, count in occurrence_heatmap.items() if count > 0}
         print(f"Aggregated {len(active_residues)} active residues across all chains for {protein_file.name}")
         
+        # Step 12: Generate Heatmap PDB
+        if active_residues:
+            generate_heatmap_pdb(protein_file, active_residues)
+        
         # Step 8: 3D Spatial Clustering (DBSCAN)
         if active_residues:
             coords, scores, residue_ids = extract_active_coordinates(protein_file, active_residues)
@@ -354,6 +486,16 @@ def process_pockets(protein_path):
             if primary_pocket:
                 best_coords, best_residues = primary_pocket
                 print(f"Final Primary Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
+                
+                # Step 9: Bounding Box Calculation
+                box_params = calculate_bounding_box(best_coords, padding=5.0)
+                print(f"Calculated Vina Grid Box: Center({box_params['center_x']:.2f}, {box_params['center_y']:.2f}, {box_params['center_z']:.2f}) | Dimensions({box_params['size_x']:.2f}, {box_params['size_y']:.2f}, {box_params['size_z']:.2f})")
+                
+                # Step 10: Volume Check & Dynamic Exhaustiveness
+                volume, exhaustiveness = calculate_volume_and_exhaustiveness(box_params)
+                print(f"Box Volume: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
+                write_vina_box_file(protein_file, box_path, box_params, exhaustiveness)
+                
             else:
                 print("Could not resolve a primary binding pocket via clustering.")
         else:

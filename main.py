@@ -7,15 +7,21 @@ from rank import rank_complexes, print_ranking
 
 from pocket import process_pockets
 
+from clean_protein import clean_proteins
+
 def parse_args(args=None):
     """Handles argument parsing separately so it can be tested with mock lists of args."""
     parser = argparse.ArgumentParser(description="Automated Docking with AutoDock Vina")
     parser.add_argument("--protein_dir", default="protein", help="Directory containing protein files")
+    parser.add_argument("--protein_clean_dir", default="protein-clean", help="Directory for cleaned protein files")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
     parser.add_argument("--box_dir", default="box", help="Directory containing box TXT files")
     parser.add_argument("--output_dir", default="output", help="Directory for output files")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
     parser.add_argument("--rank_only", action="store_true", help="Only rank existing results in output_dir without running docking")
+    parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
+    parser.add_argument("--skip_clean", action="store_true", help="Skip cleaning protein structures")
+    parser.add_argument("--clean_mode", type=str, choices=["global", "local"], default="global", help="Elimination mode for cleaning protein structures")
     return parser.parse_args(args)
 
 def generate_docking_jobs(protein_path, ligand_path, box_path):
@@ -33,10 +39,6 @@ def generate_docking_jobs(protein_path, ligand_path, box_path):
         protein_base = protein_file.stem
         box_file = box_path / f"{protein_base}.box.txt"
 
-        if not box_file.exists():
-            print(f"Warning: Box file {box_file} not found for {protein_file.name}. Skipping...")
-            continue
-
         for ligand_file in ligand_path.glob("*.sdf"):
             yield protein_file, ligand_file, box_file
 
@@ -53,11 +55,13 @@ def build_docking_command(script_path, protein_file, ligand_file, box_file, outp
     ]
 
 def run_docking(cmd):
-    """Isolated subprocess execution. Easy to mock during tests."""
+    """Isolated subprocess execution. Returns True on success, False on failure."""
     try:
         subprocess.run(cmd, check=True)
+        return True
     except subprocess.CalledProcessError as e:
         print(f"Error executing command {' '.join(cmd)}: {e}")
+        return False
 
 def main():
     args = parse_args()
@@ -73,25 +77,50 @@ def main():
     protein_path = Path(args.protein_dir)
     ligand_path = Path(args.ligand_dir)
     box_path = Path(args.box_dir)
+    # Identify pockets
+    if not args.skip_autopoc:
+        process_pockets(protein_path, box_path)
 
     if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
         print("Error: One or more input directories (protein, ligand, box) do not exist.")
         return
+    
+    # Clean proteins
+    if not args.skip_clean:
+        clean_proteins(input_dir=str(protein_path), output_dir=args.protein_clean_dir, mode=args.clean_mode)
+        protein_path = Path(args.protein_clean_dir)
+    else:
+        # If skip_clean is provided, we might still want to use protein_clean_dir if it has files, or protein_path.
+        # We'll use protein_path unless protein_clean_dir is specifically needed, but typically skip_clean means we use protein_path directly.
+        pass
 
-    # Phase 1: Identify pockets
-    process_pockets(protein_path)
 
     script_path = Path(__file__).parent / "vina.sh"
 
     jobs = generate_docking_jobs(protein_path, ligand_path, box_path)
+    error_jobs = []
     
     for protein_file, ligand_file, box_file in jobs:
         print(f"\n--- Docking {ligand_file.name} to {protein_file.name} ---")
         
+        if not box_file.exists():
+            print(f"Error: Box file {box_file.name} not found. Skipping docking...")
+            error_jobs.append(f"{protein_file.name}\t{ligand_file.name}\tMissing Box File")
+            continue
+            
         cmd = build_docking_command(
             script_path, protein_file, ligand_file, box_file, args.output_dir, args.cpus
         )
-        run_docking(cmd)
+        success = run_docking(cmd)
+        if not success:
+            error_jobs.append(f"{protein_file.name}\t{ligand_file.name}\tDocking Failed")
+
+    if error_jobs:
+        error_file = Path(args.output_dir) / "error_complexes.txt"
+        with open(error_file, "w") as ef:
+            ef.write("Protein\tLigand\tError_Type\n")
+            ef.write("\n".join(error_jobs) + "\n")
+        print(f"\nRecorded {len(error_jobs)} failed docking jobs in {error_file}")
 
     # Rank complexes after all docking jobs are complete
     results = rank_complexes(args.output_dir)
