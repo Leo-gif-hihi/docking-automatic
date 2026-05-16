@@ -121,7 +121,7 @@ def extract_sequence_from_pdb_atoms(pdb_file):
                     continue
                 # Ensure the residue has a CA atom (truly part of the backbone)
                 if 'CA' in residue:
-                    resname = residue.get_resname().capitalize()
+                    resname = residue.get_resname().strip().upper()
                     resseq = residue.get_id()[1]
                     # Map 3-letter to 1-letter code; use 'X' for unknown
                     aa_1_letter = protein_letters_3to1.get(resname, 'X')
@@ -154,29 +154,24 @@ def align_sequences(biolip_sequence, pdb_atom_sequence):
     best_alignment = alignments[0]
     return best_alignment
 
-def calculate_map_identity(best_alignment):
+def calculate_sequence_identity(best_alignment):
     """
-    Calculates the sequence identity ignoring gaps.
-    Returns the percentage of matches over total (matches + mismatches).
+    Calculates the sequence identity (matches / total alignment length).
+    Returns the percentage.
     """
     seq1, seq2 = best_alignment[0], best_alignment[1]
     
     matches = 0
-    mismatches = 0
+    total_length = len(seq1)
     
     for char1, char2 in zip(seq1, seq2):
-        # Ignore gap regions entirely
-        if char1 != '-' and char2 != '-':
-            if char1 == char2:
-                matches += 1
-            else:
-                mismatches += 1
+        if char1 == char2 and char1 != '-':
+            matches += 1
                 
-    total_aligned = matches + mismatches
-    if total_aligned == 0:
+    if total_length == 0:
         return 0.0
         
-    return (matches / total_aligned) * 100.0
+    return (matches / total_length) * 100.0
 
 def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
     """
@@ -437,6 +432,7 @@ def process_pockets(protein_path, box_path):
         print(f"Grouped chains by UniProt ID: {uniprot_to_chains}")
         
         # Phase 1, Step 5: Global Alignment
+        alignment_cache = {}
         for uniprot_id, chains in uniprot_to_chains.items():
             if uniprot_id not in biolip_data or not biolip_data[uniprot_id]:
                 continue
@@ -455,13 +451,25 @@ def process_pockets(protein_path, box_path):
                 for i, entry in enumerate(entries):
                     biolip_sequence = entry['sequence']
                     
-                    print(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1}...")
-                    best_alignment = align_sequences(biolip_sequence, pdb_atom_sequence_str)
+                    cache_key = (biolip_sequence, pdb_atom_sequence_str)
+                    
+                    if cache_key in alignment_cache:
+                        print(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1} (using cached alignment)...")
+                        best_alignment = alignment_cache[cache_key]
+                    else:
+                        print(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1}...")
+                        best_alignment = align_sequences(biolip_sequence, pdb_atom_sequence_str)
+                        alignment_cache[cache_key] = best_alignment
                     
                     if best_alignment:
                         print(f"Alignment Score: {best_alignment.score}")
-                        identity_pct = calculate_map_identity(best_alignment)
-                        print(f"Map Identity (excluding gaps): {identity_pct:.2f}%")
+                        identity_pct = calculate_sequence_identity(best_alignment)
+                        print(f"Sequence Identity: {identity_pct:.2f}%")
+                        
+                        if identity_pct <= 80.0:
+                            print(f"Sequence identity {identity_pct:.2f}% is not above 80%, skipping...")
+                            continue
+
                         mapped_resseqs = map_binding_residues(best_alignment, entry['binding_residues'], pdb_seq_data)
                         print(f"Successfully mapped {len(mapped_resseqs)} valid 3D coordinates for BioLiP Record {i+1}: {mapped_resseqs}")
                         
