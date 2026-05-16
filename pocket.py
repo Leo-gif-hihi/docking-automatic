@@ -250,7 +250,7 @@ def extract_active_coordinates(pdb_file, active_residues):
         
     return np.array(coords), np.array(scores), residue_ids
 
-def cluster_and_select_pocket(coords, scores, residue_ids, eps=7.0, min_samples=3):
+def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples=3):
     """
     Clusters 3D coordinates using DBSCAN to identify distinct binding pockets.
     Resolves multiple clusters by summing BioLiP occurrence scores and taking the maximum.
@@ -350,7 +350,7 @@ def calculate_volume_and_exhaustiveness(box_params):
     Calculates grid box volume and determines Vina exhaustiveness scaling.
     """
     volume = box_params['size_x'] * box_params['size_y'] * box_params['size_z']
-    exhaustiveness = 25 if volume <= 27000 else 50
+    exhaustiveness = 32 if volume <= 27000 else 64
     return volume, exhaustiveness
 
 def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness):
@@ -372,11 +372,94 @@ def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness):
         
     print(f"Wrote Vina box configuration to {box_file}")
 
-def generate_heatmap_pdb(protein_file, active_residues):
+def generate_pymol_box_script(protein_file, box_params, output_dir="output"):
+    """
+    Generates a PyMOL script (.pml) to visualize the generated heatmap 
+    PDB alongside the calculated Vina binding box.
+    """
+    import os
+    from pathlib import Path
+    out_path = Path(output_dir)
+    out_path.mkdir(exist_ok=True, parents=True)
+    
+    pml_file = out_path / f"{protein_file.stem}_visualize.pml"
+    heatmap_file = f"{protein_file.stem}_heatmap.pdb"
+    
+    # Calculate box corners based on center and size
+    min_x = box_params['center_x'] - (box_params['size_x'] / 2)
+    max_x = box_params['center_x'] + (box_params['size_x'] / 2)
+    min_y = box_params['center_y'] - (box_params['size_y'] / 2)
+    max_y = box_params['center_y'] + (box_params['size_y'] / 2)
+    min_z = box_params['center_z'] - (box_params['size_z'] / 2)
+    max_z = box_params['center_z'] + (box_params['size_z'] / 2)
+
+    script_content = f"""
+# Load the heatmap structure
+load {heatmap_file}
+hide all
+show cartoon
+
+# Color the protein based on the mapped occurrence scores stored in B-factor
+spectrum b, white_red, minimum=0, maximum=100
+
+# Script to draw the 3D Vina box using CGO
+python
+from pymol.cgo import *
+from pymol import cmd
+
+box = [
+    BEGIN, LINES,
+    COLOR, 0.0, 1.0, 0.0, # Green Box
+    
+    # Bottom Face
+    VERTEX, {min_x}, {min_y}, {min_z},
+    VERTEX, {max_x}, {min_y}, {min_z},
+    VERTEX, {min_x}, {max_y}, {min_z},
+    VERTEX, {max_x}, {max_y}, {min_z},
+    VERTEX, {min_x}, {min_y}, {min_z},
+    VERTEX, {min_x}, {max_y}, {min_z},
+    VERTEX, {max_x}, {min_y}, {min_z},
+    VERTEX, {max_x}, {max_y}, {min_z},
+
+    # Top Face
+    VERTEX, {min_x}, {min_y}, {max_z},
+    VERTEX, {max_x}, {min_y}, {max_z},
+    VERTEX, {min_x}, {max_y}, {max_z},
+    VERTEX, {max_x}, {max_y}, {max_z},
+    VERTEX, {min_x}, {min_y}, {max_z},
+    VERTEX, {min_x}, {max_y}, {max_z},
+    VERTEX, {max_x}, {min_y}, {max_z},
+    VERTEX, {max_x}, {max_y}, {max_z},
+
+    # Vertical Pillars
+    VERTEX, {min_x}, {min_y}, {min_z},
+    VERTEX, {min_x}, {min_y}, {max_z},
+    VERTEX, {max_x}, {min_y}, {min_z},
+    VERTEX, {max_x}, {min_y}, {max_z},
+    VERTEX, {min_x}, {max_y}, {min_z},
+    VERTEX, {min_x}, {max_y}, {max_z},
+    VERTEX, {max_x}, {max_y}, {min_z},
+    VERTEX, {max_x}, {max_y}, {max_z},
+    END
+]
+
+cmd.load_cgo(box, "docking_box")
+python end
+
+center docking_box
+zoom docking_box, 15
+"""
+    with open(pml_file, 'w', encoding='utf-8') as f:
+        f.write(script_content.strip())
+    print(f"Generated PyMOL Visualization Script: {pml_file}")
+
+def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     """
     Step 12: Writes BioLiP occurrence scores into the PDB B-factor column.
     Allows users to visually verify the pipeline's decisions in 3D (e.g., in PyMOL).
     """
+    import os
+    from pathlib import Path
     parser = PDBParser(QUIET=True)
     structure = parser.get_structure("protein", protein_file)
     
@@ -394,13 +477,16 @@ def generate_heatmap_pdb(protein_file, active_residues):
                 for atom in res:
                     atom.set_bfactor(norm_score)
                     
+    out_path = Path(output_dir)
+    out_path.mkdir(exist_ok=True, parents=True)
+    
     io = PDBIO()
     io.set_structure(structure)
-    heatmap_file = protein_file.with_name(f"{protein_file.stem}_heatmap.pdb")
+    heatmap_file = out_path / f"{protein_file.stem}_heatmap.pdb"
     io.save(str(heatmap_file))
     print(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
 
-def process_pockets(protein_path, box_path):
+def process_pockets(protein_path, box_path, output_dir="output"):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
     protein_files = list(protein_path.glob("*.pdb"))
     if not protein_files:
@@ -483,7 +569,7 @@ def process_pockets(protein_path, box_path):
         
         # Step 12: Generate Heatmap PDB
         if active_residues:
-            generate_heatmap_pdb(protein_file, active_residues)
+            generate_heatmap_pdb(protein_file, active_residues, output_dir=output_dir)
         
         # Step 8: 3D Spatial Clustering (DBSCAN)
         if active_residues:
@@ -503,6 +589,9 @@ def process_pockets(protein_path, box_path):
                 volume, exhaustiveness = calculate_volume_and_exhaustiveness(box_params)
                 print(f"Box Volume: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
                 write_vina_box_file(protein_file, box_path, box_params, exhaustiveness)
+                
+                # NEW CALL: Generate Visual Script
+                generate_pymol_box_script(protein_file, box_params, output_dir=output_dir)
                 
             else:
                 print("Could not resolve a primary binding pocket via clustering.")

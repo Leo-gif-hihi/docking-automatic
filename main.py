@@ -79,7 +79,7 @@ def main():
     box_path = Path(args.box_dir)
     # Identify pockets
     if not args.skip_autopoc:
-        process_pockets(protein_path, box_path)
+        process_pockets(protein_path, box_path, output_dir=args.output_dir)
 
     if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
         print("Error: One or more input directories (protein, ligand, box) do not exist.")
