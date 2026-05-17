@@ -1,5 +1,6 @@
 import os
 import csv
+import logging
 from pathlib import Path
 
 def extract_free_energy(log_file):
@@ -21,7 +22,7 @@ def extract_free_energy(log_file):
                     if parts and parts[0] == "1":
                         return float(parts[1])
     except Exception as e:
-        print(f"Error reading {log_file}: {e}")
+        logging.error(f"Error reading {log_file}: {e}")
     return None
 
 def rank_complexes(output_dir):
@@ -53,14 +54,14 @@ def rank_complexes(output_dir):
 
 def print_ranking(results, output_csv=None):
     if not results:
-        print("No valid log files or energy scores found.")
+        logging.warning("No valid log files or energy scores found.")
         return
         
-    print("\n--- Ranking of Complexes by Free Energy ---")
-    print(f"{'Protein':<15} | {'Ligand':<25} | {'Affinity (kcal/mol)':<20}")
-    print("-" * 66)
+    logging.info("\n--- Ranking of Complexes by Free Energy ---")
+    logging.info(f"{'Protein':<15} | {'Ligand':<25} | {'Affinity (kcal/mol)':<20}")
+    logging.info("-" * 66)
     for protein, ligand, energy in results:
-        print(f"{protein:<15} | {ligand:<25} | {energy:<20.2f}")
+        logging.info(f"{protein:<15} | {ligand:<25} | {energy:<20.2f}")
 
     if output_csv:
         try:
@@ -69,7 +70,7 @@ def print_ranking(results, output_csv=None):
                 writer.writerow(['Protein', 'Ligand', 'Affinity (kcal/mol)'])
                 for protein, ligand, energy in results:
                     writer.writerow([protein, ligand, energy])
-            print(f"\nRanking saved to {output_csv}")
+            logging.info(f"\nRanking saved to {output_csv}")
         except Exception as e:
-            print(f"Error saving to CSV: {e}")
+            logging.error(f"Error saving to CSV: {e}")
 

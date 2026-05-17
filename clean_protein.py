@@ -2,6 +2,7 @@ import os
 import glob
 import argparse
 import sys
+import logging
 from prody import parsePDB, writePDB, confProDy
 
 # Turn off ProDy's progress text to keep your terminal clean
@@ -25,12 +26,12 @@ def get_selection_string(to_eliminate, all_hetatms):
 
 def prompt_elimination(hetatms_set):
     """Prompts the user for which HETATMs to eliminate."""
-    print(f"\nFound the following HETATM residues: {', '.join(hetatms_set)}")
-    print("Which ones would you like to ELIMINATE?")
+    logging.info(f"Found the following HETATM residues: {', '.join(hetatms_set)}")
+    logging.info("Which ones would you like to ELIMINATE?")
     try:
         user_input = input("Enter them separated by commas (type 'all' to delete all HETATM, press Enter to delete only water): ").strip()
     except KeyboardInterrupt:
-        print("\n\nProcess interrupted by user (Ctrl+C). Exiting...")
+        logging.error("\n\nProcess interrupted by user (Ctrl+C). Exiting...")
         sys.exit(0)
         
     if user_input == "":
@@ -47,13 +48,13 @@ def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
     
     if clean_selection:
         writePDB(out_filepath, clean_selection)
-        print(f" -> Saved: {out_filepath}")
+        logging.debug(f" -> Saved: {out_filepath}")
     else:
-        print(f" -> Skipped {filename}: No atoms left after cleaning.")
+        logging.debug(f" -> Skipped {filename}: No atoms left after cleaning.")
 
 def run_global_mode(pdb_files, output_dir):
     """Runs the cleaning process in global mode (one prompt for all files)."""
-    print(f"Scanning {len(pdb_files)} files for HETATM residues...")
+    logging.info(f"Scanning {len(pdb_files)} files for HETATM residues...")
     all_hetatms = set()
     structures = []
     
@@ -66,23 +67,23 @@ def run_global_mode(pdb_files, output_dir):
         all_hetatms.update(get_hetatms(structure))
     
     if not all_hetatms:
-        print("No HETATM residues found in any of the PDB files.")
+        logging.debug("No HETATM residues found in any of the PDB files.")
         to_eliminate = []
     else:
         to_eliminate = prompt_elimination(all_hetatms)
         action_desc = "ALL HETATM residues" if set(to_eliminate) == all_hetatms else ", ".join(to_eliminate)
-        print(f"Action: Eliminating {action_desc}.")
+        logging.debug(f"Action: Eliminating {action_desc}.")
         
     sel_str = get_selection_string(to_eliminate, all_hetatms)
     
-    print("\nCleaning files...")
+
     for filepath, structure in structures:
         clean_and_save_pdb(structure, filepath, output_dir, sel_str)
 
 def run_local_mode(pdb_files, output_dir):
     """Runs the cleaning process in local mode (prompt per file)."""
-    print(f"Running in LOCAL mode. Scanning {len(pdb_files)} files individually.")
-    print("Tip: You can press Ctrl+C at any prompt to escape and stop processing.\n")
+    logging.info(f"Running in LOCAL mode. Scanning {len(pdb_files)} files individually.")
+    logging.info("Tip: You can press Ctrl+C at any prompt to escape and stop processing.\n")
     
     for filepath in pdb_files:
         filename = os.path.basename(filepath)
@@ -91,29 +92,29 @@ def run_local_mode(pdb_files, output_dir):
             continue
             
         file_hetatms = get_hetatms(structure)
-        print(f"--- {filename} ---")
+        logging.debug(f"--- {filename} ---")
         
         if not file_hetatms:
-            print("No HETATM residues found. Just cleaning water.")
+            logging.debug("No HETATM residues found. Just cleaning water.")
             to_eliminate = []
         else:
             to_eliminate = prompt_elimination(file_hetatms)
             action_desc = "ALL HETATM residues in this file" if set(to_eliminate) == file_hetatms else ", ".join(to_eliminate)
-            print(f"Action: Eliminating {action_desc}.")
+            logging.debug(f"Action: Eliminating {action_desc}.")
             
         sel_str = get_selection_string(to_eliminate, file_hetatms)
         clean_and_save_pdb(structure, filepath, output_dir, sel_str)
-        print("")  # Blank line for readability between files
+        logging.debug("")  # Blank line for readability between files if in debug mode
 
 def clean_proteins(input_dir="protein", output_dir="protein-clean", mode="global"):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-        print(f"Created output directory: {output_dir}")
+        logging.info(f"Created output directory: {output_dir}")
     
     pdb_files = glob.glob(os.path.join(input_dir, "*.pdb"))
     if not pdb_files:
-        print(f"No PDB files found in '{input_dir}'. Please check your folder.")
+        logging.error(f"No PDB files found in '{input_dir}'. Please check your folder.")
         return
 
     if mode == "global":
@@ -121,7 +122,7 @@ def clean_proteins(input_dir="protein", output_dir="protein-clean", mode="global
     elif mode == "local":
         run_local_mode(pdb_files, output_dir)
         
-    print("\nBatch cleaning complete!")
+    logging.info("Batch cleaning complete!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Clean PDB files by removing water and unwanted HETATMs.")

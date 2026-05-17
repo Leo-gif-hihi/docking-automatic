@@ -1,4 +1,5 @@
 import os
+import logging
 from Bio.PDB import PDBList
 
 def download_protein_biopython(protein_code, pdbl, download_dir):
@@ -11,7 +12,7 @@ def download_protein_biopython(protein_code, pdbl, download_dir):
     
     # 2. Check if this file already exists in your target folder
     if os.path.exists(expected_filename):
-        print(f"Protein {protein_code} already exists. Skipping download.")
+        logging.debug(f"Protein {protein_code} already exists. Skipping download.")
         return # Exit the function early without downloading
 
     try:
@@ -26,14 +27,15 @@ def download_protein_biopython(protein_code, pdbl, download_dir):
         # Rename "pdbXXXX.ent" to "XXXX.pdb"
         if filename and filename.endswith(".ent"):
             os.rename(filename, expected_filename)
-            print(f"Successfully downloaded and saved: {expected_filename}")
+            logging.debug(f"Successfully downloaded and saved: {expected_filename}")
         else:
-            print(f"Successfully downloaded {protein_code} to {filename}")
+            logging.debug(f"Successfully downloaded {protein_code} to {filename}")
 
     except Exception as e:
-        print(f"Failed to download protein {protein_code}. Error: {e}")
+        logging.error(f"Failed to download protein {protein_code}. Error: {e}")
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     cwd = os.getcwd()
     protein_file_path = os.path.join(cwd, "protein.txt")
     
@@ -41,14 +43,14 @@ def main():
     protein_dir = os.path.join(cwd, "protein")
     os.makedirs(protein_dir, exist_ok=True)
     
-    print(f"Current working directory: {cwd}")
-    print(f"Protein file path: {protein_file_path}")
+    logging.debug(f"Current working directory: {cwd}")
+    logging.debug(f"Protein file path: {protein_file_path}")
 
     try:
             # Read the PDB codes from the file
             with open(protein_file_path, 'r') as file:
                 protein_codes = [line.strip().upper() for line in file if line.strip()]
-                print(f"Protein codes to download: {protein_codes}")
+                logging.debug(f"Protein codes to download: {protein_codes}")
 
             # Initialize Biopython's PDB downloader tool
             pdbl = PDBList(verbose=False)
@@ -58,9 +60,9 @@ def main():
                 download_protein_biopython(code, pdbl, protein_dir)
 
     except FileNotFoundError:
-        print(f"Error: File 'protein.txt' not found at {protein_file_path}")
+        logging.error(f"Error: File 'protein.txt' not found at {protein_file_path}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        logging.error(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
     main()

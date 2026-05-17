@@ -1,6 +1,7 @@
 import os
 import argparse
 import subprocess
+import logging
 from pathlib import Path
 
 from rank import rank_complexes, print_ranking
@@ -26,6 +27,29 @@ def parse_args(args=None):
     parser.add_argument("--clean_mode", type=str, choices=["global", "local"], default="global", help="Elimination mode for cleaning protein structures")
     return parser.parse_args(args)
 
+def setup_logging(output_dir):
+    """Configures logging for console and file."""
+    logger = logging.getLogger()
+    # Clear any existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
+    logger.setLevel(logging.DEBUG)
+
+    # 1. File Handler: Always log everything to file
+    file_handler = logging.FileHandler(os.path.join(output_dir, "autodock_run.log"))
+    file_handler.setLevel(logging.DEBUG)
+    file_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_format)
+    logger.addHandler(file_handler)
+
+    # 2. Console Handler: Always DEBUG
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    console_format = logging.Formatter('%(message)s')
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+
 def generate_docking_jobs(protein_path, ligand_path, box_path):
     """
     Generator that creates valid combinations of protein, ligand, and box files.
@@ -34,7 +58,7 @@ def generate_docking_jobs(protein_path, ligand_path, box_path):
     protein_files = list(protein_path.glob("*.pdb"))
     
     if not protein_files:
-        print(f"No .pdb files found in {protein_path}.")
+        logging.error(f"No .pdb files found in {protein_path}.")
         return
 
     for protein_file in protein_files:
@@ -59,19 +83,43 @@ def build_docking_command(script_path, protein_file, ligand_file, box_file, outp
 def run_docking(cmd):
     """Isolated subprocess execution. Returns True on success, False on failure."""
     try:
-        subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logging.debug(result.stdout)
+        if result.stderr:
+            logging.debug(result.stderr)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Error executing command {' '.join(cmd)}: {e}")
+        logging.error(f"Error executing command {' '.join(cmd)}")
+        if e.stdout:
+            logging.debug(f"STDOUT: {e.stdout}")
+        if e.stderr:
+            logging.debug(f"STDERR: {e.stderr}")
         return False
 
 def main():
     args = parse_args()
 
+    if not args.rank_only:
+        existing_dirs = [d for d in [args.output_dir, "protein", "protein-clean"] if os.path.exists(d)]
+        if existing_dirs:
+            print(f"\n\033[1;33m[WARNING] The following directories already exist: {', '.join(existing_dirs)}\033[0m")
+            print("\033[1;33mOld results in these folders can conflict with the current pipeline.\033[0m")
+            print("\033[1;33mIf you want to use the previous results and ensure that all files in these directories are relevant to your project, feel free to ignore this warning.\033[0m")
+            ans = input("Do you want to delete them before continuing? (y/N): ").strip().lower()
+            if ans == 'y':
+                import shutil
+                for d in existing_dirs:
+                    shutil.rmtree(d, ignore_errors=True)
+                print("\033[1;32mDirectories deleted.\033[0m\n")
+            else:
+                print("Continuing without deleting...\n")
+
     # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
+    setup_logging(args.output_dir)
 
     if args.rank_only:
+        logging.info("\n\033[1;32m[WORKFLOW] Ranking complexes only...\033[0m")
         results = rank_complexes(args.output_dir)
         print_ranking(results, Path(args.output_dir) / "ranking.csv")
         return
@@ -81,15 +129,16 @@ def main():
     
     os.makedirs(protein_path, exist_ok=True)
     try:
+        logging.info("\n\033[1;32m[WORKFLOW] Starting protein download process...\033[0m")
         with open(args.protein_list, 'r') as file:
             protein_codes = [line.strip().upper() for line in file if line.strip()]
-            print(f"Protein codes to download: {protein_codes}")
+            logging.debug(f"Protein codes to download: {protein_codes}")
 
         pdbl = PDBList(verbose=False)
         for code in protein_codes:
             download_protein_biopython(code, pdbl, str(protein_path))
     except FileNotFoundError:
-        print(f"Error: File '{args.protein_list}' not found.")
+        logging.error(f"Error: File '{args.protein_list}' not found.")
         return
 
     ligand_path = Path(args.ligand_dir)
@@ -98,14 +147,16 @@ def main():
     vis_dir = Path(args.output_dir) / "visualization_pocket"
     os.makedirs(vis_dir, exist_ok=True)
     if not args.skip_autopoc:
+        logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
         process_pockets(protein_path, box_path, output_dir=str(vis_dir))
 
     if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
-        print("Error: One or more input directories (protein, ligand, box) do not exist.")
+        logging.error("Error: One or more input directories (protein, ligand, box) do not exist.")
         return
     
     # Clean proteins
     if not args.skip_clean:
+        logging.info("\n\033[1;32m[WORKFLOW] Cleaning proteins...\033[0m")
         clean_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode)
         protein_path = Path(protein_clean_dir)
     else:
@@ -116,11 +167,13 @@ def main():
 
     script_path = Path(__file__).parent / "vina.sh"
 
-    jobs = generate_docking_jobs(protein_path, ligand_path, box_path)
+    jobs_list = list(generate_docking_jobs(protein_path, ligand_path, box_path))
+    total_jobs = len(jobs_list)
     error_jobs = []
-    
-    for protein_file, ligand_file, box_file in jobs:
-        print(f"\n--- Docking {ligand_file.name} to {protein_file.name} ---")
+    logging.info(f"\n\033[1;32m[WORKFLOW] Generated docking jobs. Starting docking process for {total_jobs} combinations...\033[0m")
+    for i, (protein_file, ligand_file, box_file) in enumerate(jobs_list, 1):
+        logging.info(f"Completed {i}/{total_jobs} complexes")
+        logging.debug(f"\n--- Docking {ligand_file.name} to {protein_file.name} ---")
         
         protein_base = protein_file.stem
         ligand_base = ligand_file.stem
@@ -129,7 +182,7 @@ def main():
         os.makedirs(complex_output_dir, exist_ok=True)
         
         if not box_file.exists():
-            print(f"Error: Box file {box_file.name} not found. Skipping docking...")
+            logging.warning(f"Error: Box file {box_file.name} not found. Skipping docking...")
             error_jobs.append(f"{protein_file.name}\t{ligand_file.name}\tMissing Box File")
             continue
             
@@ -145,9 +198,10 @@ def main():
         with open(error_file, "w") as ef:
             ef.write("Protein\tLigand\tError_Type\n")
             ef.write("\n".join(error_jobs) + "\n")
-        print(f"\nRecorded {len(error_jobs)} failed docking jobs in {error_file}")
+        logging.warning(f"\nRecorded {len(error_jobs)} failed docking jobs in {error_file}")
 
     # Rank complexes after all docking jobs are complete
+    logging.info("\n\033[1;32m[WORKFLOW] Docking complete. Generating ranking...\033[0m")
     results = rank_complexes(args.output_dir)
     print_ranking(results, Path(args.output_dir) / "ranking.csv")
 

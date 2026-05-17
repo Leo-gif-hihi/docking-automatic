@@ -8,5 +8,8 @@
 !*.py
 !*.sh
 
+# Allow documentation files
+!*.md
+
 # Allow the .gitignore file itself
 !.gitignore

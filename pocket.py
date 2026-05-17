@@ -1,5 +1,6 @@
 import time
 import os
+import logging
 from Bio.PDB import PDBParser, PDBIO
 from Bio.PDB.Polypeptide import protein_letters_3to1
 from Bio import Align
@@ -39,7 +40,7 @@ def fetch_biolip_data(uniprot_id, max_retries=3):
     cache_file = os.path.join(cache_dir, f"{uniprot_id}.txt")
     
     if os.path.exists(cache_file):
-        print(f"Loading BioLiP data from cache for UniProt ID: {uniprot_id}")
+        logging.debug(f"Loading BioLiP data from cache for UniProt ID: {uniprot_id}")
         with open(cache_file, 'r', encoding='utf-8') as f:
             return f.read()
 
@@ -58,21 +59,21 @@ def fetch_biolip_data(uniprot_id, max_retries=3):
             #print(text)  # Debug print to check the response content
             # Check for the HTML rate limit trap or explicitly "Too many requests"
             if "Too many requests" in text or text.strip().startswith("<html") or "<html>" in text.lower():
-                print(f"Rate limited by BioLiP for UniProt ID {uniprot_id}. Attempt {attempt + 1}/{max_retries}.")
+                logging.warning(f"Rate limited by BioLiP for UniProt ID {uniprot_id}. Attempt {attempt + 1}/{max_retries}.")
             else:
                 with open(cache_file, 'w', encoding='utf-8') as f:
                     f.write(text)
                 return text
                 
         except requests.exceptions.RequestException as e:
-            print(f"Request error fetching BioLiP data for UniProt ID {uniprot_id}: {e}")
+            logging.warning(f"Request error fetching BioLiP data for UniProt ID {uniprot_id}: {e}")
             
         if attempt < max_retries - 1:
             sleep_time = 30
-            print(f"Sleeping for {sleep_time} seconds before retrying...")
+            logging.debug(f"Sleeping for {sleep_time} seconds before retrying...")
             time.sleep(sleep_time)
             
-    print(f"Failed to fetch BioLiP data for UniProt ID {uniprot_id} after {max_retries} attempts.")
+    logging.error(f"Failed to fetch BioLiP data for UniProt ID {uniprot_id} after {max_retries} attempts.")
     return None
 
 def parse_biolip_tsv(tsv_text):
@@ -206,7 +207,7 @@ def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
             # BioLiP uses 1-based indexing, convert to 0-based
             req_idx = int(res_str[1:]) - 1
         except ValueError:
-            print(f"Skipping malformed BioLiP residue string: {res_str}")
+            logging.warning(f"Skipping malformed BioLiP residue string: {res_str}")
             continue
             
         if req_idx in biolip_to_pdb_map:
@@ -215,11 +216,11 @@ def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
             
             # Validation check for mutation between pure UniProt sequence and PDB crystal homologous chain
             if pdb_aa != req_aa:
-                print(f"Mutation warning at BioLiP {res_str}: PDB structure has {pdb_aa}. Keeping coordinate.")
+                logging.debug(f"Mutation warning at BioLiP {res_str}: PDB structure has {pdb_aa}. Keeping coordinate.")
             
             mapped_resseqs.append(resseq)
         else:
-            print(f"Missing loop warning: BioLiP residue {res_str} maps to a gap in the PDB structure. Dropping.")
+            logging.debug(f"Missing loop warning: BioLiP residue {res_str} maps to a gap in the PDB structure. Dropping.")
             
     return mapped_resseqs
 
@@ -273,7 +274,7 @@ def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples
         # Sum the BioLiP occurrence scores of all residues within this cluster
         cluster_mask = (labels == label)
         cluster_score = np.sum(scores[cluster_mask])
-        print(f"  -> DBSCAN Cluster {label}: score {cluster_score}, size {np.sum(cluster_mask)} atoms")
+        logging.debug(f"  -> DBSCAN Cluster {label}: score {cluster_score}, size {np.sum(cluster_mask)} atoms")
         
         # Select cluster with the highest occurrence score as the primary active site
         if cluster_score > max_score:
@@ -281,10 +282,10 @@ def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples
             best_cluster = label
             
     if best_cluster == -1:
-        print("  -> DBSCAN failed to find any dense clusters. Check eps/min_samples.")
+        logging.warning("  -> DBSCAN failed to find any dense clusters. Check eps/min_samples.")
         return None
         
-    print(f"*** Primary Active Site Resolved: Cluster {best_cluster} with Total Score {max_score} ***")
+    logging.debug(f"*** Primary Active Site Resolved: Cluster {best_cluster} with Total Score {max_score} ***")
     
     best_coords = coords[labels == best_cluster]
     best_residue_ids = [residue_ids[i] for i in range(len(labels)) if labels[i] == best_cluster]
@@ -328,7 +329,7 @@ def collect_interactive_data(chain_to_uniprot):
         
     biolip_data = {}
     for uniprot_id in unique_uniprot_ids:
-        print(f"Fetching BioLiP data for UniProt ID: {uniprot_id}")
+        logging.debug(f"Fetching BioLiP data for UniProt ID: {uniprot_id}")
         
         # Check if it will hit cache before fetching to know if we need to sleep
         is_cached = os.path.exists(os.path.join("biolip_cache", f"{uniprot_id}.txt"))
@@ -340,7 +341,7 @@ def collect_interactive_data(chain_to_uniprot):
             
         if not is_cached:
             sleep_time = 10
-            print(f"Sleeping for {sleep_time} seconds before next API request...")
+            logging.debug(f"Sleeping for {sleep_time} seconds before next API request...")
             time.sleep(sleep_time)
             
     return biolip_data, uniprot_to_chains
@@ -370,7 +371,7 @@ def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness):
         f.write(f"size_z = {box_params['size_z']:.3f}\n")
         f.write(f"exhaustiveness = {exhaustiveness}\n")
         
-    print(f"Wrote Vina box configuration to {box_file}")
+    logging.debug(f"Wrote Vina box configuration to {box_file}")
 
 def generate_pymol_box_script(protein_file, box_params, output_dir="output"):
     """
@@ -451,7 +452,7 @@ zoom docking_box, 15
 """
     with open(pml_file, 'w', encoding='utf-8') as f:
         f.write(script_content.strip())
-    print(f"Generated PyMOL Visualization Script: {pml_file}")
+    logging.debug(f"Generated PyMOL Visualization Script: {pml_file}")
 
 def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     """
@@ -484,28 +485,30 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     io.set_structure(structure)
     heatmap_file = out_path / f"{protein_file.stem}_heatmap.pdb"
     io.save(str(heatmap_file))
-    print(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
+    logging.debug(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
 
 def process_pockets(protein_path, box_path, output_dir="output"):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
     protein_files = list(protein_path.glob("*.pdb"))
     if not protein_files:
-        print(f"No .pdb files found in {protein_path} for pocket identification.")
+        logging.error(f"No .pdb files found in {protein_path} for pocket identification.")
         return
 
-    for protein_file in protein_files:
-        print(f"\n--- Processing {protein_file.name} for pocket identification ---")
+    total_proteins = len(protein_files)
+    for i, protein_file in enumerate(protein_files, 1):
+        logging.info(f"Completed {i}/{total_proteins} proteins")
+        logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
         chain_to_uniprot = extract_uniprot_ids_from_pdb(protein_file)
         
         if not chain_to_uniprot:
-            print(f"No UniProt mappings found in DBREF records for {protein_file.name}.")
+            logging.warning(f"No UniProt mappings found in DBREF records for {protein_file.name}.")
             continue
             
-        print(f"Extracted UniProt mappings: {chain_to_uniprot}")
+        logging.debug(f"Extracted UniProt mappings: {chain_to_uniprot}")
         
         # Extract sequences physically present in the ATOM records to avoid missing loops
         chain_sequences = extract_sequence_from_pdb_atoms(protein_file)
-        print(f"Extracted physical sequences for chains: {list(chain_sequences.keys())}")
+        logging.debug(f"Extracted physical sequences for chains: {list(chain_sequences.keys())}")
         
         # Step 7: Initialize occurrence heatmap for all physical residues
         occurrence_heatmap = {}
@@ -515,7 +518,7 @@ def process_pockets(protein_path, box_path, output_dir="output"):
         
         biolip_data, uniprot_to_chains = collect_interactive_data(chain_to_uniprot)
         
-        print(f"Grouped chains by UniProt ID: {uniprot_to_chains}")
+        logging.debug(f"Grouped chains by UniProt ID: {uniprot_to_chains}")
         
         # Phase 1, Step 5: Global Alignment
         alignment_cache = {}
@@ -540,24 +543,24 @@ def process_pockets(protein_path, box_path, output_dir="output"):
                     cache_key = (biolip_sequence, pdb_atom_sequence_str)
                     
                     if cache_key in alignment_cache:
-                        print(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1} (using cached alignment)...")
+                        logging.debug(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1} (using cached alignment)...")
                         best_alignment = alignment_cache[cache_key]
                     else:
-                        print(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1}...")
+                        logging.debug(f"Aligning Chain {chain_id} (UniProt {uniprot_id}) to BioLiP Record {i+1}...")
                         best_alignment = align_sequences(biolip_sequence, pdb_atom_sequence_str)
                         alignment_cache[cache_key] = best_alignment
                     
                     if best_alignment:
-                        print(f"Alignment Score: {best_alignment.score}")
+                        logging.debug(f"Alignment Score: {best_alignment.score}")
                         identity_pct = calculate_sequence_identity(best_alignment)
-                        print(f"Sequence Identity: {identity_pct:.2f}%")
+                        logging.debug(f"Sequence Identity: {identity_pct:.2f}%")
                         
                         if identity_pct <= 80.0:
-                            print(f"Sequence identity {identity_pct:.2f}% is not above 80%, skipping...")
+                            logging.debug(f"Sequence identity {identity_pct:.2f}% is not above 80%, skipping...")
                             continue
 
                         mapped_resseqs = map_binding_residues(best_alignment, entry['binding_residues'], pdb_seq_data)
-                        print(f"Successfully mapped {len(mapped_resseqs)} valid 3D coordinates for BioLiP Record {i+1}: {mapped_resseqs}")
+                        logging.debug(f"Successfully mapped {len(mapped_resseqs)} valid 3D coordinates for BioLiP Record {i+1}: {mapped_resseqs}")
                         
                         # Step 7: Aggregation
                         for resseq in mapped_resseqs:
@@ -565,7 +568,7 @@ def process_pockets(protein_path, box_path, output_dir="output"):
 
         # Step 7: Merge the final score arrays into a single, unified pool
         active_residues = {k: count for k, count in occurrence_heatmap.items() if count > 0}
-        print(f"Aggregated {len(active_residues)} active residues across all chains for {protein_file.name}")
+        logging.debug(f"Aggregated {len(active_residues)} active residues across all chains for {protein_file.name}")
         
         # Step 12: Generate Heatmap PDB
         if active_residues:
@@ -574,28 +577,28 @@ def process_pockets(protein_path, box_path, output_dir="output"):
         # Step 8: 3D Spatial Clustering (DBSCAN)
         if active_residues:
             coords, scores, residue_ids = extract_active_coordinates(protein_file, active_residues)
-            print(f"Executing DBSCAN Clustering on {len(coords)} accumulated 3D spatial points...")
+            logging.debug(f"Executing DBSCAN Clustering on {len(coords)} accumulated 3D spatial points...")
             primary_pocket = cluster_and_select_pocket(coords, scores, residue_ids)
             
             if primary_pocket:
                 best_coords, best_residues = primary_pocket
-                print(f"Final Primary Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
+                logging.debug(f"Final Primary Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
                 
                 # Step 9: Bounding Box Calculation
                 box_params = calculate_bounding_box(best_coords, padding=5.0)
-                print(f"Calculated Vina Grid Box: Center({box_params['center_x']:.2f}, {box_params['center_y']:.2f}, {box_params['center_z']:.2f}) | Dimensions({box_params['size_x']:.2f}, {box_params['size_y']:.2f}, {box_params['size_z']:.2f})")
+                logging.debug(f"Calculated Vina Grid Box: Center({box_params['center_x']:.2f}, {box_params['center_y']:.2f}, {box_params['center_z']:.2f}) | Dimensions({box_params['size_x']:.2f}, {box_params['size_y']:.2f}, {box_params['size_z']:.2f})")
                 
                 # Step 10: Volume Check & Dynamic Exhaustiveness
                 volume, exhaustiveness = calculate_volume_and_exhaustiveness(box_params)
-                print(f"Box Volume: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
+                logging.debug(f"Box Volume: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
                 write_vina_box_file(protein_file, box_path, box_params, exhaustiveness)
                 
                 # NEW CALL: Generate Visual Script
                 generate_pymol_box_script(protein_file, box_params, output_dir=output_dir)
                 
             else:
-                print("Could not resolve a primary binding pocket via clustering.")
+                logging.warning("Could not resolve a primary binding pocket via clustering.")
         else:
-            print("No active residues found to cluster.")
+            logging.warning("No active residues found to cluster.")
         # At this point, active_residues contains the pooled binding residues ready for 3D clustering
 
