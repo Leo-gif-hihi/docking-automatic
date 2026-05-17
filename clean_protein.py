@@ -110,7 +110,7 @@ def clean_proteins(input_dir="protein", output_dir="protein-clean", mode="global
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-        logging.info(f"Created output directory: {output_dir}")
+        logging.debug(f"Created output directory: {output_dir}")
     
     pdb_files = glob.glob(os.path.join(input_dir, "*.pdb"))
     if not pdb_files:

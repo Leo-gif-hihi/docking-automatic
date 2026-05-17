@@ -24,6 +24,7 @@ def parse_args(args=None):
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
     parser.add_argument("--rank_only", action="store_true", help="Only rank existing results in output_dir without running docking")
     parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
+    parser.add_argument("--identify_pockets_only", action="store_true", help="Only identify pockets and exit; skip docking and ranking")
     parser.add_argument("--skip_clean", action="store_true", help="Skip cleaning protein structures")
     parser.add_argument("--clean_mode", type=str, choices=["global", "local"], default="global", help="Elimination mode for cleaning protein structures")
     return parser.parse_args(args)
@@ -105,7 +106,11 @@ def main():
         if existing_dirs:
             print(f"\n\033[1;33m[WARNING] The following directories already exist: {', '.join(existing_dirs)}\033[0m")
             print("\033[1;33mOld results in these folders can conflict with the current pipeline.\033[0m")
-            print("\033[1;33mIf you want to use the previous results and ensure that all files in these directories are relevant to your project, feel free to ignore this warning.\033[0m")
+            print(
+                "\033[1;33mIf you want to use the previous results and ensure that all files in these directories "
+                "are relevant to your project (for example, rerun the workflow after interrupted), "
+                "feel free to ignore this warning.\033[0m"
+            )
             ans = input("Do you want to delete them before continuing? (y/N): ").strip().lower()
             if ans == 'y':
                 import shutil
@@ -148,14 +153,19 @@ def main():
 
     ligand_path = Path(args.ligand_dir)
     box_path = Path(args.box_dir)
-    # Identify pockets
+    # Identify pockets (either as part of pipeline or as a dedicated identify-only run)
     vis_dir = Path(args.output_dir) / "visualization_pocket"
     os.makedirs(vis_dir, exist_ok=True)
-    if not args.skip_autopoc:
+    if args.identify_pockets_only or not args.skip_autopoc:
         step_start = time.time()
         logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
+        if args.identify_pockets_only and args.skip_autopoc:
+            logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
         process_pockets(protein_path, box_path, output_dir=str(vis_dir))
         logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+        if args.identify_pockets_only:
+            logging.info("\n\033[1;32m[WORKFLOW] Pocket identification complete. Exiting (identify-only mode).\033[0m")
+            return
 
     if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
         logging.error("Error: One or more input directories (protein, ligand, box) do not exist.")
@@ -190,6 +200,12 @@ def main():
         vina_out_dir = Path(args.output_dir) / "vina_output"
         complex_output_dir = vina_out_dir / f"{protein_base}_{ligand_base}"
         os.makedirs(complex_output_dir, exist_ok=True)
+
+        # CHECK IF VINA LOG ALREADY EXISTS
+        expected_log_file = complex_output_dir / f"{protein_base}_{ligand_base}_vina.log"
+        if expected_log_file.exists():
+            logging.debug(f"Log file {expected_log_file.name} already exists. Skipping docking...")
+            continue
         
         if not box_file.exists():
             logging.warning(f"Error: Box file {box_file.name} not found. Skipping docking...")
