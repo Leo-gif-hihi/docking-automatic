@@ -9,11 +9,13 @@ from pocket import process_pockets
 
 from clean_protein import clean_proteins
 
+from download_protein import download_protein_biopython
+from Bio.PDB import PDBList
+
 def parse_args(args=None):
     """Handles argument parsing separately so it can be tested with mock lists of args."""
     parser = argparse.ArgumentParser(description="Automated Docking with AutoDock Vina")
-    parser.add_argument("--protein_dir", default="protein", help="Directory containing protein files")
-    parser.add_argument("--protein_clean_dir", default="protein-clean", help="Directory for cleaned protein files")
+    parser.add_argument("--protein_list", default="protein.txt", help="Text file containing list of protein PDB codes")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
     parser.add_argument("--box_dir", default="box", help="Directory containing box TXT files")
     parser.add_argument("--output_dir", default="output", help="Directory for output files")
@@ -74,7 +76,22 @@ def main():
         print_ranking(results, Path(args.output_dir) / "ranking.csv")
         return
 
-    protein_path = Path(args.protein_dir)
+    protein_path = Path("protein")
+    protein_clean_dir = "protein-clean"
+    
+    os.makedirs(protein_path, exist_ok=True)
+    try:
+        with open(args.protein_list, 'r') as file:
+            protein_codes = [line.strip().upper() for line in file if line.strip()]
+            print(f"Protein codes to download: {protein_codes}")
+
+        pdbl = PDBList(verbose=False)
+        for code in protein_codes:
+            download_protein_biopython(code, pdbl, str(protein_path))
+    except FileNotFoundError:
+        print(f"Error: File '{args.protein_list}' not found.")
+        return
+
     ligand_path = Path(args.ligand_dir)
     box_path = Path(args.box_dir)
     # Identify pockets
@@ -89,8 +106,8 @@ def main():
     
     # Clean proteins
     if not args.skip_clean:
-        clean_proteins(input_dir=str(protein_path), output_dir=args.protein_clean_dir, mode=args.clean_mode)
-        protein_path = Path(args.protein_clean_dir)
+        clean_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode)
+        protein_path = Path(protein_clean_dir)
     else:
         # If skip_clean is provided, we might still want to use protein_clean_dir if it has files, or protein_path.
         # We'll use protein_path unless protein_clean_dir is specifically needed, but typically skip_clean means we use protein_path directly.
