@@ -27,7 +27,7 @@ def extract_free_energy(log_file):
 def rank_complexes(output_dir):
     """Finds all log files in output_dir, extracts energies, and returns a sorted list."""
     output_path = Path(output_dir)
-    log_files = list(output_path.glob("*.log"))
+    log_files = list(output_path.rglob("*.log"))
     
     results = []
     for log_file in log_files:

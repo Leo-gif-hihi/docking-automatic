@@ -78,8 +78,10 @@ def main():
     ligand_path = Path(args.ligand_dir)
     box_path = Path(args.box_dir)
     # Identify pockets
+    vis_dir = Path(args.output_dir) / "visualization_pocket"
+    os.makedirs(vis_dir, exist_ok=True)
     if not args.skip_autopoc:
-        process_pockets(protein_path, box_path, output_dir=args.output_dir)
+        process_pockets(protein_path, box_path, output_dir=str(vis_dir))
 
     if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
         print("Error: One or more input directories (protein, ligand, box) do not exist.")
@@ -103,13 +105,19 @@ def main():
     for protein_file, ligand_file, box_file in jobs:
         print(f"\n--- Docking {ligand_file.name} to {protein_file.name} ---")
         
+        protein_base = protein_file.stem
+        ligand_base = ligand_file.stem
+        vina_out_dir = Path(args.output_dir) / "vina_output"
+        complex_output_dir = vina_out_dir / f"{protein_base}_{ligand_base}"
+        os.makedirs(complex_output_dir, exist_ok=True)
+        
         if not box_file.exists():
             print(f"Error: Box file {box_file.name} not found. Skipping docking...")
             error_jobs.append(f"{protein_file.name}\t{ligand_file.name}\tMissing Box File")
             continue
             
         cmd = build_docking_command(
-            script_path, protein_file, ligand_file, box_file, args.output_dir, args.cpus
+            script_path, protein_file, ligand_file, box_file, str(complex_output_dir), args.cpus
         )
         success = run_docking(cmd)
         if not success:
