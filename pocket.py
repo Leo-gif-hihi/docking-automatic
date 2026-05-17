@@ -290,7 +290,7 @@ def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples
     best_coords = coords[labels == best_cluster]
     best_residue_ids = [residue_ids[i] for i in range(len(labels)) if labels[i] == best_cluster]
     
-    return best_coords, best_residue_ids
+    return best_coords, best_residue_ids, max_score
 
 def calculate_bounding_box(coords, padding=5.0):
     """
@@ -489,6 +489,13 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
 
 def process_pockets(protein_path, box_path, output_dir="output"):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
+    from pathlib import Path
+    out_path = Path(output_dir)
+    out_path.mkdir(exist_ok=True, parents=True)
+    reliability_file = out_path / "pocket_reliability.csv"
+    with open(reliability_file, 'w', encoding='utf-8') as f:
+        f.write("protein_name,pocket_score\n")
+
     protein_files = list(protein_path.glob("*.pdb"))
     if not protein_files:
         logging.error(f"No .pdb files found in {protein_path} for pocket identification.")
@@ -581,7 +588,11 @@ def process_pockets(protein_path, box_path, output_dir="output"):
             primary_pocket = cluster_and_select_pocket(coords, scores, residue_ids)
             
             if primary_pocket:
-                best_coords, best_residues = primary_pocket
+                best_coords, best_residues, best_score = primary_pocket
+                
+                with open(reliability_file, 'a', encoding='utf-8') as rf:
+                    rf.write(f"{protein_file.name},{best_score}\n")
+
                 logging.debug(f"Final Primary Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
                 
                 # Step 9: Bounding Box Calculation
