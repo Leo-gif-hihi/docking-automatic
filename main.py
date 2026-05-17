@@ -2,6 +2,7 @@ import os
 import argparse
 import subprocess
 import logging
+import time
 from pathlib import Path
 
 from rank import rank_complexes, print_ranking
@@ -119,9 +120,11 @@ def main():
     setup_logging(args.output_dir)
 
     if args.rank_only:
+        step_start = time.time()
         logging.info("\n\033[1;32m[WORKFLOW] Ranking complexes only...\033[0m")
         results = rank_complexes(args.output_dir)
         print_ranking(results, Path(args.output_dir) / "ranking.csv")
+        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
         return
 
     protein_path = Path("protein")
@@ -129,6 +132,7 @@ def main():
     
     os.makedirs(protein_path, exist_ok=True)
     try:
+        step_start = time.time()
         logging.info("\n\033[1;32m[WORKFLOW] Starting protein download process...\033[0m")
         with open(args.protein_list, 'r') as file:
             protein_codes = [line.strip().upper() for line in file if line.strip()]
@@ -137,6 +141,7 @@ def main():
         pdbl = PDBList(verbose=False)
         for code in protein_codes:
             download_protein_biopython(code, pdbl, str(protein_path))
+        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
     except FileNotFoundError:
         logging.error(f"Error: File '{args.protein_list}' not found.")
         return
@@ -147,8 +152,10 @@ def main():
     vis_dir = Path(args.output_dir) / "visualization_pocket"
     os.makedirs(vis_dir, exist_ok=True)
     if not args.skip_autopoc:
+        step_start = time.time()
         logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
         process_pockets(protein_path, box_path, output_dir=str(vis_dir))
+        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 
     if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
         logging.error("Error: One or more input directories (protein, ligand, box) do not exist.")
@@ -156,9 +163,11 @@ def main():
     
     # Clean proteins
     if not args.skip_clean:
+        step_start = time.time()
         logging.info("\n\033[1;32m[WORKFLOW] Cleaning proteins...\033[0m")
         clean_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode)
         protein_path = Path(protein_clean_dir)
+        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
     else:
         # If skip_clean is provided, we might still want to use protein_clean_dir if it has files, or protein_path.
         # We'll use protein_path unless protein_clean_dir is specifically needed, but typically skip_clean means we use protein_path directly.
@@ -170,6 +179,7 @@ def main():
     jobs_list = list(generate_docking_jobs(protein_path, ligand_path, box_path))
     total_jobs = len(jobs_list)
     error_jobs = []
+    step_start = time.time()
     logging.info(f"\n\033[1;32m[WORKFLOW] Generated docking jobs. Starting docking process for {total_jobs} combinations...\033[0m")
     for i, (protein_file, ligand_file, box_file) in enumerate(jobs_list, 1):
         logging.info(f"Completed {i}/{total_jobs} complexes")
@@ -200,10 +210,14 @@ def main():
             ef.write("\n".join(error_jobs) + "\n")
         logging.warning(f"\nRecorded {len(error_jobs)} failed docking jobs in {error_file}")
 
+    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+
     # Rank complexes after all docking jobs are complete
+    step_start = time.time()
     logging.info("\n\033[1;32m[WORKFLOW] Docking complete. Generating ranking...\033[0m")
     results = rank_complexes(args.output_dir)
     print_ranking(results, Path(args.output_dir) / "ranking.csv")
+    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 
 if __name__ == "__main__":
     main()
