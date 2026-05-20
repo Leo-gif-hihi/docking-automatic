@@ -71,6 +71,33 @@ def print_ranking(results, output_csv=None):
                 for protein, ligand, energy in results:
                     writer.writerow([protein, ligand, energy])
             logging.info(f"\nRanking saved to {output_csv}")
+            
+            # Check for isomers and create a best isomers ranking
+            has_isomers = any("_isomer_" in ligand for _, ligand, _ in results)
+            if has_isomers:
+                best_isomers = {}
+                for protein, ligand, energy in results:
+                    if "_isomer_" in ligand:
+                        base_ligand = ligand.split("_isomer_")[0]
+                    else:
+                        base_ligand = ligand
+                        
+                    key = (protein, base_ligand)
+                    # Keep the one with the lowest energy
+                    if key not in best_isomers or energy < best_isomers[key][1]:
+                        best_isomers[key] = (ligand, energy)
+                        
+                best_results = [(p, data[0], data[1]) for (p, _), data in best_isomers.items()]
+                best_results.sort(key=lambda x: x[2])  # Sort by energy
+                
+                best_csv = Path(output_csv).with_name(f"best_isomers_{Path(output_csv).name}")
+                with open(best_csv, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Protein', 'Best_Isomer_Ligand', 'Affinity (kcal/mol)'])
+                    for protein, ligand, energy in best_results:
+                        writer.writerow([protein, ligand, energy])
+                logging.info(f"Best isomers ranking saved to {best_csv}")
+                
         except Exception as e:
             logging.error(f"Error saving to CSV: {e}")
 

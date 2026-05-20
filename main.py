@@ -9,24 +9,23 @@ from rank import rank_complexes, print_ranking
 
 from pocket import process_pockets
 
-from clean_protein import clean_proteins
+from prepare import prepare_proteins, prepare_ligands
 
-from download_protein import download_protein_biopython
-from Bio.PDB import PDBList
+from download_protein import download_proteins
 
 def parse_args(args=None):
     """Handles argument parsing separately so it can be tested with mock lists of args."""
     parser = argparse.ArgumentParser(description="Automated Docking with AutoDock Vina")
     parser.add_argument("--protein_list", default="protein.txt", help="Text file containing list of protein PDB codes")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
-    parser.add_argument("--box_dir", default="box", help="Directory containing box TXT files")
-    parser.add_argument("--output_dir", default="output", help="Directory for output files")
+    parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_list})")
+    parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_list}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
     parser.add_argument("--rank_only", action="store_true", help="Only rank existing results in output_dir without running docking")
     parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
     parser.add_argument("--identify_pockets_only", action="store_true", help="Only identify pockets and exit; skip docking and ranking")
-    parser.add_argument("--skip_clean", action="store_true", help="Skip cleaning protein structures")
     parser.add_argument("--clean_mode", type=str, choices=["global", "local"], default="global", help="Elimination mode for cleaning protein structures")
+    parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -45,64 +44,85 @@ def setup_logging(output_dir):
     file_handler.setFormatter(file_format)
     logger.addHandler(file_handler)
 
-    # 2. Console Handler: Always DEBUG
+    # 2. Console Handler: INFO level for terminal
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
+    console_handler.setLevel(logging.INFO)
     console_format = logging.Formatter('%(message)s')
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
 
-def generate_docking_jobs(protein_path, ligand_path, box_path):
+def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path):
     """
     Generator that creates valid combinations of protein, ligand, and box files.
-    Yields: (protein_file, ligand_file, box_file)
+    Yields: (protein_base, ligand_base, box_file)
     """
-    protein_files = list(protein_path.glob("*.pdb"))
-    
-    if not protein_files:
-        logging.error(f"No .pdb files found in {protein_path}.")
+    if not prepared_proteins:
+        logging.error(f"No prepared proteins found.")
         return
 
-    for protein_file in protein_files:
-        protein_base = protein_file.stem
+    for protein_base in prepared_proteins:
         box_file = box_path / f"{protein_base}.box.txt"
 
-        for ligand_file in ligand_path.glob("*.sdf"):
-            yield protein_file, ligand_file, box_file
+        for ligand_base in prepared_ligands:
+            yield protein_base, ligand_base, box_file
 
-def build_docking_command(script_path, protein_file, ligand_file, box_file, output_dir, cpus):
-    """Pure logic function for building the command. Easy to unit test."""
-    return [
-        "bash",
-        str(script_path),
-        str(protein_file),
-        str(ligand_file),
-        str(box_file),
-        str(output_dir),
-        str(cpus)
-    ]
-
-def run_docking(cmd):
-    """Isolated subprocess execution. Returns True on success, False on failure."""
+def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, cpus):
+    """Runs the docking pipeline for a single pair (already prepared)."""
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logging.debug(result.stdout)
-        if result.stderr:
-            logging.debug(result.stderr)
+        out_pdbqt = Path(output_dir) / f"{protein_base}_{ligand_base}_vina_out.pdbqt"
+        out_sdf = Path(output_dir) / f"{protein_base}_{ligand_base}_vina_out.sdf"
+        out_log = Path(output_dir) / f"{protein_base}_{ligand_base}_vina.log"
+
+        # 5. Running AutoDock Vina
+        cmd_vina = [
+            "vina", "--receptor", str(protein_pdbqt),
+            "--ligand", str(ligand_pdbqt),
+            "--config", str(box_file),
+            "--out", str(out_pdbqt)
+        ]
+        if cpus > 0:
+            cmd_vina.extend(["--cpu", str(cpus)])
+            
+        logging.debug(f"Running Vina: {' '.join(cmd_vina)}")
+        
+        with open(out_log, "w") as log_file:
+            subprocess.run(cmd_vina, check=True, stdout=log_file, stderr=subprocess.STDOUT)
+
+        # 6. Exporting Results to SDF (Meeko)
+        cmd_export = ["mk_export.py", str(out_pdbqt), "-s", str(out_sdf)]
+        subprocess.run(cmd_export, check=True, capture_output=True, text=True)
+
         return True
+    
     except subprocess.CalledProcessError as e:
-        logging.error(f"Error executing command {' '.join(cmd)}")
+        logging.error(f"Error executing command: {e.cmd}")
         if e.stdout:
             logging.debug(f"STDOUT: {e.stdout}")
         if e.stderr:
             logging.debug(f"STDERR: {e.stderr}")
         return False
+    except Exception as e:
+        logging.error(f"Unexpected error during docking pipeline: {e}")
+        return False
 
 def main():
     args = parse_args()
 
+    # Dynamically set protein_path, protein_clean_dir, output_dir, and box_dir based on protein_list and ligand_dir
+    protein_list_name = Path(args.protein_list).stem
+    ligand_dir_name = Path(args.ligand_dir).stem
+    protein_path = Path(protein_list_name)
+    protein_clean_dir = f"{protein_list_name}_prepared"
+    ligand_prepared_dir = f"{ligand_dir_name}_prepared"
+
+    if args.output_dir is None:
+        args.output_dir = f"output_{protein_list_name}_{ligand_dir_name}"
+
+    if args.box_dir is None:
+        args.box_dir = f"box_{protein_list_name}"
+
     if not args.rank_only:
-        existing_dirs = [d for d in [args.output_dir, "protein", "protein-clean"] if os.path.exists(d)]
+        existing_dirs = [d for d in [args.output_dir, str(protein_path), protein_clean_dir, ligand_prepared_dir] if os.path.exists(d)]
         if existing_dirs:
             print(f"\n\033[1;33m[WARNING] The following directories already exist: {', '.join(existing_dirs)}\033[0m")
             print("\033[1;33mOld results in these folders can conflict with the current pipeline.\033[0m")
@@ -132,23 +152,13 @@ def main():
         logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
         return
 
-    protein_path = Path("protein")
-    protein_clean_dir = "protein-clean"
-    
     os.makedirs(protein_path, exist_ok=True)
     try:
         step_start = time.time()
         logging.info("\n\033[1;32m[WORKFLOW] Starting protein download process...\033[0m")
-        with open(args.protein_list, 'r') as file:
-            protein_codes = [line.strip().upper() for line in file if line.strip()]
-            logging.debug(f"Protein codes to download: {protein_codes}")
-
-        pdbl = PDBList(verbose=False)
-        for code in protein_codes:
-            download_protein_biopython(code, pdbl, str(protein_path))
+        download_proteins(args.protein_list, str(protein_path))
         logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
     except FileNotFoundError:
-        logging.error(f"Error: File '{args.protein_list}' not found.")
         return
 
     ligand_path = Path(args.ligand_dir)
@@ -171,53 +181,65 @@ def main():
         logging.error("Error: One or more input directories (protein, ligand, box) do not exist.")
         return
     
-    # Clean proteins
-    if not args.skip_clean:
-        step_start = time.time()
-        logging.info("\n\033[1;32m[WORKFLOW] Cleaning proteins...\033[0m")
-        clean_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode)
-        protein_path = Path(protein_clean_dir)
-        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
-    else:
-        # If skip_clean is provided, we might still want to use protein_clean_dir if it has files, or protein_path.
-        # We'll use protein_path unless protein_clean_dir is specifically needed, but typically skip_clean means we use protein_path directly.
-        pass
+    # Clean and prepare proteins
+    prepared_proteins = {}
+    step_start = time.time()
+    logging.info("\n\033[1;32m[WORKFLOW] Preparing proteins...\033[0m")
+    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode)
+    protein_clean_path = Path(protein_clean_dir)
+    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 
+    # Prepare ligands
+    step_start = time.time()
+    logging.info("\n\033[1;32m[WORKFLOW] Preparing ligands...\033[0m")
+    
+    prepared_ligands = prepare_ligands(ligand_path, args.ph, ligand_prepared_dir)
+        
+    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 
-    script_path = Path(__file__).parent / "vina.sh"
-
-    jobs_list = list(generate_docking_jobs(protein_path, ligand_path, box_path))
+    jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_path))
     total_jobs = len(jobs_list)
     error_jobs = []
     step_start = time.time()
     logging.info(f"\n\033[1;32m[WORKFLOW] Generated docking jobs. Starting docking process for {total_jobs} combinations...\033[0m")
-    for i, (protein_file, ligand_file, box_file) in enumerate(jobs_list, 1):
-        logging.info(f"Completed {i}/{total_jobs} complexes")
-        logging.debug(f"\n--- Docking {ligand_file.name} to {protein_file.name} ---")
+    for i, (protein_base, ligand_base, box_file) in enumerate(jobs_list, 1):
+        logging.info(f"Process {i}/{total_jobs} complexes")
+        logging.debug(f"\n--- Docking {ligand_base} to {protein_base} ---")
         
-        protein_base = protein_file.stem
-        ligand_base = ligand_file.stem
         vina_out_dir = Path(args.output_dir) / "vina_output"
         complex_output_dir = vina_out_dir / f"{protein_base}_{ligand_base}"
         os.makedirs(complex_output_dir, exist_ok=True)
 
-        # CHECK IF VINA LOG ALREADY EXISTS
+        # CHECK IF VINA LOG ALREADY EXISTS AND IS COMPLETE
         expected_log_file = complex_output_dir / f"{protein_base}_{ligand_base}_vina.log"
         if expected_log_file.exists():
-            logging.debug(f"Log file {expected_log_file.name} already exists. Skipping docking...")
-            continue
-        
+            with open(expected_log_file, "r") as log_file:
+                log_content = log_file.read()
+                if log_content.count("*") >= 51:
+                    logging.debug(f"Log file {expected_log_file.name} already exists and docking is complete. Skipping docking...")
+                    continue
+                else:
+                    logging.debug(f"Log file {expected_log_file.name} exists but docking is incomplete. Proceeding with docking...")
+            
         if not box_file.exists():
             logging.warning(f"Error: Box file {box_file.name} not found. Skipping docking...")
-            error_jobs.append(f"{protein_file.name}\t{ligand_file.name}\tMissing Box File")
+            error_jobs.append(f"{protein_base}\t{ligand_base}\tMissing Box File")
             continue
             
-        cmd = build_docking_command(
-            script_path, protein_file, ligand_file, box_file, str(complex_output_dir), args.cpus
+        protein_pdbqt = prepared_proteins.get(protein_base)
+        ligand_pdbqt = prepared_ligands.get(ligand_base)
+        
+        if not protein_pdbqt or not ligand_pdbqt:
+            logging.error(f"Error: Missing prepared files for {protein_base} or {ligand_base}. Skipping...")
+            error_jobs.append(f"{protein_base}\t{ligand_base}\tPreparation Failed")
+            continue
+            
+        success = run_docking_pipeline(
+            protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
+            protein_base, ligand_base, args.cpus
         )
-        success = run_docking(cmd)
         if not success:
-            error_jobs.append(f"{protein_file.name}\t{ligand_file.name}\tDocking Failed")
+            error_jobs.append(f"{protein_base}\t{ligand_base}\tDocking Failed")
 
     if error_jobs:
         error_file = Path(args.output_dir) / "error_complexes.txt"

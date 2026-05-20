@@ -13,3 +13,6 @@
 
 # Allow the .gitignore file itself
 !.gitignore
+
+# Ignore the virtual environment folder
+.venv/

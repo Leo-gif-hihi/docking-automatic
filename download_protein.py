@@ -1,6 +1,7 @@
 import os
 import logging
 from Bio.PDB import PDBList
+import time
 
 def download_protein_biopython(protein_code, pdbl, download_dir):
     """
@@ -34,6 +35,41 @@ def download_protein_biopython(protein_code, pdbl, download_dir):
     except Exception as e:
         logging.error(f"Failed to download protein {protein_code}. Error: {e}")
 
+def download_proteins(protein_list_file, download_dir):
+    """
+    Reads a list of PDB codes from a file and downloads them sequentially.
+    Retries up to 3 times for each protein in case of errors, with a 10-second delay between attempts.
+    """
+    try:
+        with open(protein_list_file, 'r') as file:
+            protein_codes = [line.strip().upper() for line in file if line.strip()]
+            logging.debug(f"Protein codes to download: {protein_codes}")
+
+        # Initialize Biopython's PDB downloader tool
+        pdbl = PDBList(verbose=False)
+
+        # Loop through the list sequentially
+        for code in protein_codes:
+            attempts = 0
+            while attempts < 3:
+                try:
+                    download_protein_biopython(code, pdbl, download_dir)
+                    break  # Exit the retry loop if successful
+                except Exception as e:
+                    attempts += 1
+                    logging.warning(f"Attempt {attempts} failed for protein {code}. Error: {e}")
+                    if attempts < 3:
+                        time.sleep(10)  # Wait 10 seconds before retrying
+                    else:
+                        logging.error(f"Failed to download protein {code} after 3 attempts.")
+
+    except FileNotFoundError:
+        logging.error(f"Error: File '{protein_list_file}' not found.")
+        raise
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        raise
+
 def main():
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     cwd = os.getcwd()
@@ -47,22 +83,9 @@ def main():
     logging.debug(f"Protein file path: {protein_file_path}")
 
     try:
-            # Read the PDB codes from the file
-            with open(protein_file_path, 'r') as file:
-                protein_codes = [line.strip().upper() for line in file if line.strip()]
-                logging.debug(f"Protein codes to download: {protein_codes}")
-
-            # Initialize Biopython's PDB downloader tool
-            pdbl = PDBList(verbose=False)
-
-            # Loop through the list sequentially
-            for code in protein_codes:
-                download_protein_biopython(code, pdbl, protein_dir)
-
-    except FileNotFoundError:
-        logging.error(f"Error: File 'protein.txt' not found at {protein_file_path}")
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
+        download_proteins(protein_file_path, protein_dir)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
