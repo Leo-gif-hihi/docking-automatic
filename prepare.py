@@ -3,10 +3,44 @@ import glob
 import argparse
 import sys
 import logging
+import urllib.request
+import urllib.parse
+import re
 from prody import parsePDB, writePDB, confProDy
 
 # Turn off ProDy's progress text to keep your terminal clean
 confProDy(verbosity='none')
+
+def get_uniprot_cofactor(uniprot_id):
+    """
+    Extracts cofactor information for a target UniProt ID using the UniProt REST API
+    and returns a list of unique ChEBI IDs.
+    
+    Args:
+        uniprot_id (str): The UniProt Accession ID (e.g., 'V5NC32').
+        
+    Returns:
+        list: A list of unique ChEBI IDs (e.g., ['CHEBI:18420', 'CHEBI:49883']).
+    """
+    url = f"https://rest.uniprot.org/uniprotkb/search?query=accession_id:{urllib.parse.quote(uniprot_id)}&format=tsv&fields=accession,protein_name,cc_cofactor"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req) as response:
+            data = response.read().decode('utf-8')
+            
+        lines = data.strip().split('\n')
+        if len(lines) > 1:
+            # The first line is the header, the second line has the data
+            columns = lines[1].split('\t')
+            # cc_cofactor is the 3rd field requested, so index 2
+            if len(columns) >= 3:
+                cc_cofactor = columns[2].strip()
+                chebi_ids = re.findall(r'ChEBI:(CHEBI:\d+)', cc_cofactor)
+                return list(set(chebi_ids))
+    except Exception as e:
+        logging.error(f"Failed to fetch cofactor info for {uniprot_id}: {e}")
+        
+    return []
 
 def get_hetatms(structure):
     """Extracts unique HETATM residue names from a structure, excluding water."""
