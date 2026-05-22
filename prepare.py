@@ -233,18 +233,37 @@ def prepare_proteins(input_dir, output_dir, mode):
         logging.error(f"No PDB files found in '{input_dir}'. Please check your folder.")
         return {}
 
-    cleaned_paths = []
-    if mode == "global":
-        cleaned_paths = clean_global_mode(pdb_files, output_dir)
-    elif mode == "local":
-        cleaned_paths = clean_local_mode(pdb_files, output_dir)
-    elif mode == "auto":
-        cleaned_paths = clean_auto_mode(pdb_files, output_dir)
+# Partition files: check if they already exist in the output directory
+    files_to_clean = []
+    already_cleaned_paths = []
+    
+    for filepath in pdb_files:
+        filename = os.path.basename(filepath)
+        expected_out_path = os.path.join(output_dir, filename)
+        
+        if os.path.exists(expected_out_path):
+            logging.debug(f"Skipping cleaning for {filename}: already exists in output directory.")
+            already_cleaned_paths.append(expected_out_path)
+        else:
+            files_to_clean.append(filepath)
+
+    # Only run the cleaning modes on files that actually need it
+    newly_cleaned_paths = []
+    if files_to_clean:
+        if mode == "global":
+            newly_cleaned_paths = clean_global_mode(files_to_clean, output_dir)
+        elif mode == "local":
+            newly_cleaned_paths = clean_local_mode(files_to_clean, output_dir)
+        elif mode == "auto":
+            newly_cleaned_paths = clean_auto_mode(files_to_clean, output_dir)
+            
+    # Combine lists so downstream tasks process all files
+    all_cleaned_paths = already_cleaned_paths + newly_cleaned_paths
         
     from pathlib import Path
     prepared_results = {}
     
-    for cleaned_pdb_path in cleaned_paths:
+    for cleaned_pdb_path in all_cleaned_paths:
         protein_path = Path(cleaned_pdb_path)
         protein_dir = protein_path.parent
         protein_base = protein_path.stem
