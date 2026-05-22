@@ -21,7 +21,6 @@ def parse_args(args=None):
     parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_list})")
     parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_list}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
-    parser.add_argument("--rank_only", action="store_true", help="Only rank existing results in output_dir without running docking")
     parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
     parser.add_argument("--identify_pockets_only", action="store_true", help="Only identify pockets and exit; skip docking and ranking")
     parser.add_argument("--clean_mode", type=str, choices=["auto","global", "local"], default="auto", help="Elimination mode for cleaning protein structures")
@@ -121,36 +120,27 @@ def main():
     if args.box_dir is None:
         args.box_dir = f"box_{protein_list_name}"
 
-    if not args.rank_only:
-        existing_dirs = [d for d in [args.output_dir, str(protein_path), protein_clean_dir, ligand_prepared_dir] if os.path.exists(d)]
-        if existing_dirs:
-            print(f"\n\033[1;33m[WARNING] The following directories already exist: {', '.join(existing_dirs)}\033[0m")
-            print("\033[1;33mOld results in these folders can conflict with the current pipeline.\033[0m")
-            print(
-                "\033[1;33mIf you want to use the previous results and ensure that all files in these directories "
-                "are relevant to your project (for example, rerun the workflow after interrupted), "
-                "feel free to ignore this warning.\033[0m"
-            )
-            ans = input("Do you want to delete them before continuing? (y/N): ").strip().lower()
-            if ans == 'y':
-                import shutil
-                for d in existing_dirs:
-                    shutil.rmtree(d, ignore_errors=True)
-                print("\033[1;32mDirectories deleted.\033[0m\n")
-            else:
-                print("Continuing without deleting...\n")
+    existing_dirs = [d for d in [args.output_dir, str(protein_path), protein_clean_dir, ligand_prepared_dir] if os.path.exists(d)]
+    if existing_dirs:
+        print(f"\n\033[1;33m[WARNING] The following directories already exist: {', '.join(existing_dirs)}\033[0m")
+        print("\033[1;33mOld results in these folders can conflict with the current pipeline.\033[0m")
+        print(
+            "\033[1;33mIf you want to use the previous results and ensure that all files in these directories "
+            "are relevant to your project (for example, rerun the workflow after interrupted), "
+            "feel free to ignore this warning.\033[0m"
+        )
+        ans = input("Do you want to delete them before continuing? (y/N): ").strip().lower()
+        if ans == 'y':
+            import shutil
+            for d in existing_dirs:
+                shutil.rmtree(d, ignore_errors=True)
+            print("\033[1;32mDirectories deleted.\033[0m\n")
+        else:
+            print("Continuing without deleting...\n")
 
     # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
     setup_logging(args.output_dir)
-
-    if args.rank_only:
-        step_start = time.time()
-        logging.info("\n\033[1;32m[WORKFLOW] Ranking complexes only...\033[0m")
-        results = rank_complexes(args.output_dir)
-        print_ranking(results, Path(args.output_dir) / "ranking.csv")
-        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
-        return
 
     os.makedirs(protein_path, exist_ok=True)
     try:
