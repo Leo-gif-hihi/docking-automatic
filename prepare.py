@@ -3,44 +3,11 @@ import glob
 import argparse
 import sys
 import logging
-import urllib.request
-import urllib.parse
-import re
 from prody import parsePDB, writePDB, confProDy
 
 # Turn off ProDy's progress text to keep your terminal clean
 confProDy(verbosity='none')
 
-def get_uniprot_cofactor(uniprot_id):
-    """
-    Extracts cofactor information for a target UniProt ID using the UniProt REST API
-    and returns a list of unique ChEBI IDs.
-    
-    Args:
-        uniprot_id (str): The UniProt Accession ID (e.g., 'V5NC32').
-        
-    Returns:
-        list: A list of unique ChEBI IDs (e.g., ['CHEBI:18420', 'CHEBI:49883']).
-    """
-    url = f"https://rest.uniprot.org/uniprotkb/search?query=accession_id:{urllib.parse.quote(uniprot_id)}&format=tsv&fields=accession,protein_name,cc_cofactor"
-    try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req) as response:
-            data = response.read().decode('utf-8')
-            
-        lines = data.strip().split('\n')
-        if len(lines) > 1:
-            # The first line is the header, the second line has the data
-            columns = lines[1].split('\t')
-            # cc_cofactor is the 3rd field requested, so index 2
-            if len(columns) >= 3:
-                cc_cofactor = columns[2].strip()
-                chebi_ids = re.findall(r'ChEBI:(CHEBI:\d+)', cc_cofactor)
-                return list(set(chebi_ids))
-    except Exception as e:
-        logging.error(f"Failed to fetch cofactor info for {uniprot_id}: {e}")
-        
-    return []
 
 def get_hetatms(structure):
     """Extracts unique HETATM residue names from a structure, excluding water."""
@@ -170,6 +137,60 @@ def clean_local_mode(pdb_files, output_dir):
         
     return cleaned_paths
 
+def clean_auto_mode(pdb_files, output_dir):
+    """Runs the cleaning process in auto mode (keeps essential cofactors automatically)."""
+    from pocket import extract_uniprot_ids_from_pdb
+    from auto_extract_cofactor import get_pdb_cofactors_for_uniprot
+    
+    logging.debug(f"Running in AUTO mode. Scanning {len(pdb_files)} files individually.")
+    
+    cleaned_paths = []
+    for filepath in pdb_files:
+        filename = os.path.basename(filepath)
+        structure = parsePDB(filepath)
+        if structure is None:
+            continue
+            
+        file_hetatms = get_hetatms(structure)
+        logging.debug(f"--- {filename} ---")
+        
+        if not file_hetatms:
+            logging.debug("No HETATM residues found. Just cleaning water.")
+            to_eliminate = []
+            sel_str = get_selection_string(to_eliminate, file_hetatms)
+        else:
+            chain_to_uniprot = extract_uniprot_ids_from_pdb(filepath)
+            
+            essential_cofactors = set()
+            uniprot_to_pdb_mapping = {}
+            for chain_id, uniprot_id in chain_to_uniprot.items():
+                if uniprot_id not in uniprot_to_pdb_mapping:
+                    uniprot_to_pdb_mapping[uniprot_id] = get_pdb_cofactors_for_uniprot(uniprot_id)
+                
+                pdb_mapping = uniprot_to_pdb_mapping[uniprot_id]
+                for chebi, pdb_list in pdb_mapping.items():
+                    for pdb_id in pdb_list:
+                        essential_cofactors.add(pdb_id.upper())
+            
+            to_eliminate = []
+            for hetatm in file_hetatms:
+                if hetatm.upper() not in essential_cofactors:
+                    to_eliminate.append(hetatm)
+            
+            kept = essential_cofactors & set([h.upper() for h in file_hetatms])
+            kept_str = ", ".join(kept) if kept else "none"
+            action_desc = "ALL HETATM residues in this file" if set(to_eliminate) == file_hetatms else ", ".join(to_eliminate)
+            logging.debug(f"Action: Eliminating {action_desc} (Kept {kept_str} as essential cofactors).")
+            
+            sel_str = get_selection_string(to_eliminate, file_hetatms)
+            
+        cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, sel_str)
+        if cleaned_pdb_path:
+            cleaned_paths.append(cleaned_pdb_path)
+        logging.debug("")
+        
+    return cleaned_paths
+
 def run_reduce2(protein_path, protein_protonated):
     """Runs mmtbx.reduce2 to add hydrogens and optimize the structure."""
     import subprocess
@@ -217,6 +238,8 @@ def prepare_proteins(input_dir, output_dir, mode):
         cleaned_paths = clean_global_mode(pdb_files, output_dir)
     elif mode == "local":
         cleaned_paths = clean_local_mode(pdb_files, output_dir)
+    elif mode == "auto":
+        cleaned_paths = clean_auto_mode(pdb_files, output_dir)
         
     from pathlib import Path
     prepared_results = {}
@@ -374,7 +397,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Clean PDB files by removing water and unwanted HETATMs.")
     parser.add_argument("-i", "--input_dir", type=str, default="protein", help="Input directory containing PDB files.")
     parser.add_argument("-o", "--output_dir", type=str, default="protein-clean", help="Output directory for cleaned PDB files.")
-    parser.add_argument("-m", "--mode", type=str, choices=["global", "local"], default="global", help="Elimination mode: 'global' applies to all files, 'local' asks for each file individually.")
+    parser.add_argument("-m", "--mode", type=str, choices=["global", "local", "auto"], default="global", help="Elimination mode: 'global' applies to all files, 'local' asks for each file individually, 'auto' automatically keeps essential cofactors based on UniProt DB.")
     
     args = parser.parse_args()
     

@@ -24,7 +24,7 @@ def parse_args(args=None):
     parser.add_argument("--rank_only", action="store_true", help="Only rank existing results in output_dir without running docking")
     parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
     parser.add_argument("--identify_pockets_only", action="store_true", help="Only identify pockets and exit; skip docking and ranking")
-    parser.add_argument("--clean_mode", type=str, choices=["global", "local"], default="global", help="Elimination mode for cleaning protein structures")
+    parser.add_argument("--clean_mode", type=str, choices=["auto","global", "local"], default="auto", help="Elimination mode for cleaning protein structures")
     parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
     return parser.parse_args(args)
 
@@ -203,7 +203,7 @@ def main():
     step_start = time.time()
     logging.info(f"\n\033[1;32m[WORKFLOW] Generated docking jobs. Starting docking process for {total_jobs} combinations...\033[0m")
     for i, (protein_base, ligand_base, box_file) in enumerate(jobs_list, 1):
-        logging.info(f"Process {i}/{total_jobs} complexes")
+        logging.info(f"Docking {i}/{total_jobs} complexes")
         logging.debug(f"\n--- Docking {ligand_base} to {protein_base} ---")
         
         vina_out_dir = Path(args.output_dir) / "vina_output"

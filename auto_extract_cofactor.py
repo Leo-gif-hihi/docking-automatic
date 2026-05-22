@@ -5,6 +5,7 @@ import re
 import logging
 import gzip
 import shutil
+import time
 
 def download_chebi_accession_file(filepath="database_accession.tsv"):
     """
@@ -14,6 +15,7 @@ def download_chebi_accession_file(filepath="database_accession.tsv"):
     Args:
         filepath (str): The local path where the extracted file should be saved.
     """
+    time.sleep(1)  # Sleep to avoid overwhelming the server with requests
     # Updated to the new HTTPS path and .gz filename
     url = "https://ftp.ebi.ac.uk/pub/databases/chebi/flat_files/database_accession.tsv.gz"
     gz_filepath = filepath + ".gz"
@@ -51,6 +53,7 @@ def get_uniprot_cofactor(uniprot_id):
     Returns:
         list: A list of unique ChEBI IDs (e.g., ['CHEBI:18420', 'CHEBI:49883']).
     """
+    time.sleep(1)
     url = f"https://rest.uniprot.org/uniprotkb/search?query=accession_id:{urllib.parse.quote(uniprot_id)}&format=tsv&fields=accession,protein_name,cc_cofactor"
     try:
         req = urllib.request.Request(url)
@@ -125,7 +128,7 @@ def get_pdb_cofactors_for_uniprot(uniprot_id, filepath="database_accession.tsv")
     Returns:
         dict: The resulting mapping of ChEBI IDs to PDB IDs.
     """
-    logging.info(f"Starting execution for UniProt ID: {uniprot_id}")
+    logging.debug(f"Starting execution for UniProt ID: {uniprot_id}")
     
     # 1. Download
     download_chebi_accession_file(filepath)
@@ -133,13 +136,13 @@ def get_pdb_cofactors_for_uniprot(uniprot_id, filepath="database_accession.tsv")
     # 2. Get ChEBI IDs
     chebi_ids = get_uniprot_cofactor(uniprot_id)
     if not chebi_ids:
-        logging.info(f"No cofactors found for {uniprot_id}.")
+        logging.debug(f"No cofactors found for {uniprot_id}.")
         return {}
         
-    logging.info(f"Found ChEBI cofactors: {chebi_ids}")
+    logging.debug(f"Found ChEBI cofactors: {chebi_ids}")
     
     # 3. Map to PDB
     pdb_mapping = map_chebi_to_pdb(chebi_ids, filepath)
-    logging.info(f"Mapped PDB cofactors: {pdb_mapping}")
+    logging.debug(f"Mapped PDB cofactors: {pdb_mapping}")
     
     return pdb_mapping
