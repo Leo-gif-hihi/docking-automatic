@@ -3,7 +3,7 @@ import glob
 import argparse
 import sys
 import logging
-from prody import parsePDB, writePDB, confProDy
+from prody import parseMMCIF, writePDB, confProDy
 
 # Turn off ProDy's progress text to keep your terminal clean
 confProDy(verbosity='none')
@@ -41,32 +41,67 @@ def prompt_elimination(hetatms_set):
         return list(hetatms_set)
     return [res.strip() for res in user_input.split(',')]
 
+def construct_cryst1_from_cif(cif_filepath):
+    """
+    Parses an mmCIF file and constructs a PDB-formatted CRYST1 line.
+    Ensures exact column width formatting per the wwPDB format v3.3.
+    """
+    try:
+        from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+        mmcif_dict = MMCIF2Dict(cif_filepath)
+        
+        if '_cell.length_a' in mmcif_dict:
+            a = float(mmcif_dict['_cell.length_a'][0])
+            b = float(mmcif_dict['_cell.length_b'][0])
+            c = float(mmcif_dict['_cell.length_c'][0])
+            alpha = float(mmcif_dict['_cell.angle_alpha'][0])
+            beta = float(mmcif_dict['_cell.angle_beta'][0])
+            gamma = float(mmcif_dict['_cell.angle_gamma'][0])
+            
+            # Extract space group and strip any potential quotes
+            sg = mmcif_dict.get('_symmetry.space_group_name_H-M', ['P 1'])[0]
+            sg = sg.strip("'\"")
+            
+            # Safely extract Z value
+            z_str = mmcif_dict.get('_cell.Z_PDB', ['1'])[0]
+            try:
+                z = int(z_str)
+            except ValueError:
+                z = 1
+                
+            # Construct the CRYST1 string enforcing exact column widths
+            # 1-6(Record name), 7-15(a), 16-24(b), 25-33(c), 34-40(alpha), 41-47(beta), 48-54(gamma)
+            # 55(Space), 56-66(Space group), 67-70(Z)
+            cryst1_line = f"CRYST1{a:9.3f}{b:9.3f}{c:9.3f}{alpha:7.2f}{beta:7.2f}{gamma:7.2f} {sg[:11]:<11s}{z:4d}\n"
+            return cryst1_line
+    except Exception as e:
+        logging.warning(f"Could not construct CRYST1 for {cif_filepath}: {e}")
+        
+    return None
+
 def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
     """Applies the selection string to clean the structure and saves it to the output directory."""
-    filename = os.path.basename(original_filepath)
+    filename = os.path.basename(original_filepath).replace('.cif', '.pdb')
     clean_selection = structure.select(sel_str)
     out_filepath = os.path.join(output_dir, filename)
     
     if clean_selection:
+            # --- Construct CRYST1 line for reduce2 ---
+            cryst1_line = construct_cryst1_from_cif(original_filepath)
+            
+            # CRYST1 line is mandatory
+            if not cryst1_line:
+                logging.error(f" -> Skipped {filename}: Could not construct mandatory CRYST1 line.")
+                return None
+                
             writePDB(out_filepath, clean_selection)
             
-            # --- Restore CRYST1 line for reduce2 ---
-            cryst1_line = None
-            # Read the original PDB file to find the CRYST1 line
-            with open(original_filepath, 'r') as f:
-                for line in f:
-                    if line.startswith("CRYST1"):
-                        cryst1_line = line
-                        break
-            
-            # If there is CRYST1, 
             # insert it on the first line of the cleaned file
-            if cryst1_line:
-                with open(out_filepath, 'r') as f:
-                    content = f.read()
-                with open(out_filepath, 'w') as f:
-                    f.write(cryst1_line)
-                    f.write(content)
+            with open(out_filepath, 'r') as f:
+                content = f.read()
+            with open(out_filepath, 'w') as f:
+                f.write(cryst1_line)
+                f.write(content)
 
             logging.debug(f" -> Saved: {out_filepath}")
             return out_filepath
@@ -82,7 +117,7 @@ def clean_global_mode(pdb_files, output_dir):
     
     # Pre-parse and collect all HETATMs
     for filepath in pdb_files:
-        structure = parsePDB(filepath)
+        structure = parseMMCIF(filepath)
         if structure is None:
             continue
         structures.append((filepath, structure))
@@ -114,7 +149,7 @@ def clean_local_mode(pdb_files, output_dir):
     cleaned_paths = []
     for filepath in pdb_files:
         filename = os.path.basename(filepath)
-        structure = parsePDB(filepath)
+        structure = parseMMCIF(filepath)
         if structure is None:
             continue
             
@@ -139,7 +174,7 @@ def clean_local_mode(pdb_files, output_dir):
 
 def clean_auto_mode(pdb_files, output_dir):
     """Runs the cleaning process in auto mode (keeps essential cofactors automatically)."""
-    from pocket import extract_uniprot_ids_from_pdb
+    from pocket import extract_uniprot_ids_from_cif
     from auto_extract_cofactor import get_pdb_cofactors_for_uniprot
     
     logging.debug(f"Running in AUTO mode. Scanning {len(pdb_files)} files individually.")
@@ -147,7 +182,7 @@ def clean_auto_mode(pdb_files, output_dir):
     cleaned_paths = []
     for filepath in pdb_files:
         filename = os.path.basename(filepath)
-        structure = parsePDB(filepath)
+        structure = parseMMCIF(filepath)
         if structure is None:
             continue
             
@@ -159,7 +194,7 @@ def clean_auto_mode(pdb_files, output_dir):
             to_eliminate = []
             sel_str = get_selection_string(to_eliminate, file_hetatms)
         else:
-            chain_to_uniprot = extract_uniprot_ids_from_pdb(filepath)
+            chain_to_uniprot = extract_uniprot_ids_from_cif(filepath)
             
             essential_cofactors = set()
             uniprot_to_pdb_mapping = {}
@@ -222,23 +257,23 @@ def run_meeko_receptor(protein_protonated, protein_prep_out):
     ]
     subprocess.run(cmd_meeko, check=True, capture_output=True, text=True)
 
-def prepare_proteins(input_dir, output_dir, mode):
+def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         logging.debug(f"Created output directory: {output_dir}")
     
-    pdb_files = glob.glob(os.path.join(input_dir, "*.pdb"))
+    pdb_files = glob.glob(os.path.join(input_dir, "*.cif"))
     if not pdb_files:
-        logging.error(f"No PDB files found in '{input_dir}'. Please check your folder.")
+        logging.error(f"No CIF files found in '{input_dir}'. Please check your folder.")
         return {}
-
+    
 # Partition files: check if they already exist in the output directory
     files_to_clean = []
     already_cleaned_paths = []
     
     for filepath in pdb_files:
-        filename = os.path.basename(filepath)
+        filename = os.path.basename(filepath).replace('.cif', '.pdb')
         expected_out_path = os.path.join(output_dir, filename)
         
         if os.path.exists(expected_out_path):
@@ -250,7 +285,17 @@ def prepare_proteins(input_dir, output_dir, mode):
     # Only run the cleaning modes on files that actually need it
     newly_cleaned_paths = []
     if files_to_clean:
-        if mode == "global":
+        if skip_cofactor:
+            # Skip all mode logic: only remove water, keep all HETATM cofactors
+            logging.debug("keep_cofactor=True: Removing only water from all files.")
+            for filepath in files_to_clean:
+                structure = parseMMCIF(filepath)
+                if structure is None:
+                    continue
+                cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, "protein or (not water)")
+                if cleaned_pdb_path:
+                    newly_cleaned_paths.append(cleaned_pdb_path)
+        elif mode == "global":
             newly_cleaned_paths = clean_global_mode(files_to_clean, output_dir)
         elif mode == "local":
             newly_cleaned_paths = clean_local_mode(files_to_clean, output_dir)

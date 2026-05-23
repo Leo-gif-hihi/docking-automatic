@@ -1,7 +1,8 @@
 import time
 import os
 import logging
-from Bio.PDB import PDBParser, PDBIO
+from Bio.PDB import PDBParser, PDBIO, MMCIFParser
+from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from Bio.PDB.Polypeptide import protein_letters_3to1
 from Bio import Align
 import requests
@@ -9,24 +10,44 @@ import json
 import numpy as np
 from sklearn.cluster import DBSCAN
 
-def extract_uniprot_ids_from_pdb(pdb_file):
+def extract_uniprot_ids_from_cif(cif_file):
     """
-    Parses a PDB file to extract UniProt IDs for each chain from DBREF records.
+    Parses an mmCIF file to extract UniProt IDs for each chain from _struct_ref and _struct_ref_seq.
     Returns a dictionary mapping chain ID to UniProt ID.
     """
     chain_to_uniprot = {}
+    mmcif_dict = MMCIF2Dict(cif_file)
     
-    with open(pdb_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith("DBREF"):
-                # Example DBREF line
-                # DBREF  2X9A A    1   373  UNP    P00519   ABL1_HUMAN       9   381
-                parts = line.split()
-                if len(parts) >= 7 and parts[5] == "UNP":
-                    chain_id = parts[2]
-                    uniprot_id = parts[6]
-                    chain_to_uniprot[chain_id] = uniprot_id
-                    
+    ref_id_to_unp = {}
+    if '_struct_ref.id' in mmcif_dict:
+        ids = mmcif_dict['_struct_ref.id']
+        db_names = mmcif_dict.get('_struct_ref.db_name', [])
+        # BioLiP expects the UniProt Accession Number (e.g., P00519), not the Database Code (e.g., ABL1_HUMAN)
+        db_codes = mmcif_dict.get('_struct_ref.pdbx_db_accession', [])
+        
+        # Fallback to db_code if pdbx_db_accession is somehow missing
+        if not db_codes:
+            db_codes = mmcif_dict.get('_struct_ref.db_code', [])
+        
+        if isinstance(ids, str):
+            ids, db_names, db_codes = [ids], [db_names], [db_codes]
+            
+        for i in range(len(ids)):
+            if i < len(db_names) and i < len(db_codes) and db_names[i] == 'UNP':
+                ref_id_to_unp[ids[i]] = db_codes[i]
+
+    if '_struct_ref_seq.ref_id' in mmcif_dict:
+        seq_ref_ids = mmcif_dict['_struct_ref_seq.ref_id']
+        chains = mmcif_dict.get('_struct_ref_seq.pdbx_strand_id', [])
+        
+        if isinstance(seq_ref_ids, str):
+            seq_ref_ids, chains = [seq_ref_ids], [chains]
+            
+        for i in range(len(seq_ref_ids)):
+            ref_id = seq_ref_ids[i]
+            if i < len(chains) and ref_id in ref_id_to_unp:
+                chain_to_uniprot[chains[i]] = ref_id_to_unp[ref_id]
+                
     return chain_to_uniprot
 
 def fetch_biolip_data(uniprot_id, max_retries=3):
@@ -102,14 +123,14 @@ def parse_biolip_tsv(tsv_text):
             
     return parsed_entries
 
-def extract_sequence_from_pdb_atoms(pdb_file):
+def extract_sequence_from_cif_atoms(cif_file):
     """
-    Extracts the amino acid sequence for each chain physically present in the PDB file 
+    Extracts the amino acid sequence for each chain physically present in the mmCIF file 
     based solely on ATOM records (avoiding missing loops from SEQRES).
     Returns a dict mapping chain ID to a list of tuples: (1-letter-AA, ResSeq).
     """
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("protein", pdb_file)
+    parser = MMCIFParser(QUIET=True)
+    structure = parser.get_structure("protein", cif_file)
     chain_sequences = {}
 
     for model in structure:
@@ -224,13 +245,13 @@ def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
             
     return mapped_resseqs
 
-def extract_active_coordinates(pdb_file, active_residues):
+def extract_active_coordinates(cif_file, active_residues):
     """
     Extracts 3D coordinates (x,y,z) for the Alpha-Carbon of high-scoring residues.
     Returns coords (Nx3 NumPy array), scores (Nx1 NumPy array), and corresponding residue mappings.
     """
-    parser = PDBParser(QUIET=True)
-    structure = parser.get_structure("protein", pdb_file)
+    parser = MMCIFParser(QUIET=True)
+    structure = parser.get_structure("protein", cif_file)
     coords = []
     scores = []
     residue_ids = []
@@ -461,7 +482,7 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     """
     import os
     from pathlib import Path
-    parser = PDBParser(QUIET=True)
+    parser = MMCIFParser(QUIET=True)
     structure = parser.get_structure("protein", protein_file)
     
     max_score = max(active_residues.values()) if active_residues else 0
@@ -496,16 +517,16 @@ def process_pockets(protein_path, box_path, output_dir="output"):
     with open(reliability_file, 'w', encoding='utf-8') as f:
         f.write("protein_name,pocket_score\n")
 
-    protein_files = list(protein_path.glob("*.pdb"))
+    protein_files = list(protein_path.glob("*.cif"))
     if not protein_files:
-        logging.error(f"No .pdb files found in {protein_path} for pocket identification.")
+        logging.error(f"No .cif files found in {protein_path} for pocket identification.")
         return
 
     total_proteins = len(protein_files)
     for i, protein_file in enumerate(protein_files, 1):
         logging.info(f"Completed {i}/{total_proteins} proteins")
         logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
-        chain_to_uniprot = extract_uniprot_ids_from_pdb(protein_file)
+        chain_to_uniprot = extract_uniprot_ids_from_cif(protein_file)
         
         if not chain_to_uniprot:
             logging.warning(f"No UniProt mappings found in DBREF records for {protein_file.name}.")
@@ -514,7 +535,7 @@ def process_pockets(protein_path, box_path, output_dir="output"):
         logging.debug(f"Extracted UniProt mappings: {chain_to_uniprot}")
         
         # Extract sequences physically present in the ATOM records to avoid missing loops
-        chain_sequences = extract_sequence_from_pdb_atoms(protein_file)
+        chain_sequences = extract_sequence_from_cif_atoms(protein_file)
         logging.debug(f"Extracted physical sequences for chains: {list(chain_sequences.keys())}")
         
         # Step 7: Initialize occurrence heatmap for all physical residues

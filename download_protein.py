@@ -9,7 +9,7 @@ def download_protein_biopython(protein_code, pdbl, download_dir):
     skipping the download if the file already exists.
     """
     # 1. Define what the final expected filename will look like
-    expected_filename = os.path.join(download_dir, f"{protein_code.lower()}.pdb")
+    expected_filename = os.path.join(download_dir, f"{protein_code.lower()}.cif")
     
     # 2. Check if this file already exists in your target folder
     if os.path.exists(expected_filename):
@@ -17,20 +17,21 @@ def download_protein_biopython(protein_code, pdbl, download_dir):
         return # Exit the function early without downloading
 
     try:
-        # Fetch the standard PDB file (changed overwrite to False)
+        # Fetch the standard mmCIF file (changed overwrite to False)
         filename = pdbl.retrieve_pdb_file(
             pdb_code=protein_code,
             pdir=download_dir,
-            file_format='pdb',
+            file_format='mmCif',
             overwrite=False 
         )
         
-        # Rename "pdbXXXX.ent" to "XXXX.pdb"
-        if filename and filename.endswith(".ent"):
-            os.rename(filename, expected_filename)
+        # Ensure the filename matches expected_filename
+        if filename and os.path.abspath(filename) != os.path.abspath(expected_filename):
+            if os.path.exists(filename):
+                os.rename(filename, expected_filename)
             logging.debug(f"Successfully downloaded and saved: {expected_filename}")
         else:
-            logging.debug(f"Successfully downloaded {protein_code} to {filename}")
+            logging.debug(f"Successfully downloaded {protein_code} to {expected_filename}")
 
     except Exception as e:
         logging.error(f"Failed to download protein {protein_code}. Error: {e}")

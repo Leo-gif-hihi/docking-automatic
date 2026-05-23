@@ -25,6 +25,7 @@ def parse_args(args=None):
     parser.add_argument("--identify_pockets_only", action="store_true", help="Only identify pockets and exit; skip docking and ranking")
     parser.add_argument("--clean_mode", type=str, choices=["auto","global", "local"], default="auto", help="Elimination mode for cleaning protein structures")
     parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
+    parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water (default: keep cofactors, only delete water)")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -175,7 +176,7 @@ def main():
     prepared_proteins = {}
     step_start = time.time()
     logging.info("\n\033[1;32m[WORKFLOW] Preparing proteins...\033[0m")
-    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode)
+    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor)
     protein_clean_path = Path(protein_clean_dir)
     logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 
