@@ -287,7 +287,7 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
     if files_to_clean:
         if skip_cofactor:
             # Skip all mode logic: only remove water, keep all HETATM cofactors
-            logging.debug("keep_cofactor=True: Removing only water from all files.")
+            logging.debug("skip_cofactor=False: Removing only water from all files.")
             for filepath in files_to_clean:
                 structure = parseMMCIF(filepath)
                 if structure is None:

@@ -116,9 +116,13 @@ def parse_biolip_tsv(tsv_text):
             # Extract protein sequence
             protein_sequence = parts[20].strip()
             
+            # Extract ligand information
+            ligand = parts[4].strip() if len(parts) > 4 else ""
+            
             parsed_entries.append({
                 'binding_residues': binding_residues,
-                'sequence': protein_sequence
+                'sequence': protein_sequence,
+                'ligand': ligand
             })
             
     return parsed_entries
@@ -275,17 +279,16 @@ def extract_active_coordinates(cif_file, active_residues):
 def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples=3):
     """
     Clusters 3D coordinates using DBSCAN to identify distinct binding pockets.
-    Resolves multiple clusters by summing BioLiP occurrence scores and taking the maximum.
+    Returns a list of all identified clusters sorted by score descending.
     """
     if len(coords) == 0:
-        return None
+        return []
         
     dbscan = DBSCAN(eps=eps, min_samples=min_samples)
     labels = dbscan.fit_predict(coords)
     
     unique_labels = set(labels)
-    best_cluster = -1
-    max_score = -1
+    clusters = []
     
     for label in unique_labels:
         if label == -1:
@@ -297,21 +300,24 @@ def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples
         cluster_score = np.sum(scores[cluster_mask])
         logging.debug(f"  -> DBSCAN Cluster {label}: score {cluster_score}, size {np.sum(cluster_mask)} atoms")
         
-        # Select cluster with the highest occurrence score as the primary active site
-        if cluster_score > max_score:
-            max_score = cluster_score
-            best_cluster = label
-            
-    if best_cluster == -1:
-        logging.warning("  -> DBSCAN failed to find any dense clusters. Check eps/min_samples.")
-        return None
+        cluster_coords = coords[cluster_mask]
+        cluster_residues = [residue_ids[i] for i in range(len(labels)) if labels[i] == label]
         
-    logging.debug(f"*** Primary Active Site Resolved: Cluster {best_cluster} with Total Score {max_score} ***")
+        clusters.append({
+            'id': label,
+            'coords': cluster_coords,
+            'residues': cluster_residues,
+            'score': cluster_score
+        })
+            
+    if not clusters:
+        logging.warning("  -> DBSCAN failed to find any dense clusters. Check eps/min_samples.")
+        return []
+        
+    clusters.sort(key=lambda x: x['score'], reverse=True)
+    logging.debug(f"*** Found {len(clusters)} clusters. Top cluster Score: {clusters[0]['score']} ***")
     
-    best_coords = coords[labels == best_cluster]
-    best_residue_ids = [residue_ids[i] for i in range(len(labels)) if labels[i] == best_cluster]
-    
-    return best_coords, best_residue_ids, max_score
+    return clusters
 
 def calculate_bounding_box(coords, padding=5.0):
     """
@@ -375,13 +381,14 @@ def calculate_volume_and_exhaustiveness(box_params):
     exhaustiveness = 32 if volume <= 27000 else 64
     return volume, exhaustiveness
 
-def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness):
+def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, cluster_idx=None):
     """
     Writes the Vina configuration box file.
     """
     import os
     os.makedirs(box_path, exist_ok=True)
-    box_file = box_path / f"{protein_file.stem}.box.txt"
+    suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
+    box_file = box_path / f"{protein_file.stem}{suffix}.box.txt"
     
     with open(box_file, 'w', encoding='utf-8') as f:
         f.write(f"center_x = {box_params['center_x']:.3f}\n")
@@ -394,7 +401,7 @@ def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness):
         
     logging.debug(f"Wrote Vina box configuration to {box_file}")
 
-def generate_pymol_box_script(protein_file, box_params, output_dir="output"):
+def generate_pymol_box_script(protein_file, box_params, output_dir="output", cluster_idx=None):
     """
     Generates a PyMOL script (.pml) to visualize the generated heatmap 
     PDB alongside the calculated Vina binding box.
@@ -404,7 +411,8 @@ def generate_pymol_box_script(protein_file, box_params, output_dir="output"):
     out_path = Path(output_dir)
     out_path.mkdir(exist_ok=True, parents=True)
     
-    pml_file = out_path / f"{protein_file.stem}_visualize.pml"
+    suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
+    pml_file = out_path / f"{protein_file.stem}{suffix}_visualize.pml"
     heatmap_file = f"{protein_file.stem}_heatmap.pdb"
     
     # Calculate box corners based on center and size
@@ -515,7 +523,7 @@ def process_pockets(protein_path, box_path, output_dir="output"):
     out_path.mkdir(exist_ok=True, parents=True)
     reliability_file = out_path / "pocket_reliability.csv"
     with open(reliability_file, 'w', encoding='utf-8') as f:
-        f.write("protein_name,pocket_score\n")
+        f.write("protein_name,pocket_score,ligands\n")
 
     protein_files = list(protein_path.glob("*.cif"))
     if not protein_files:
@@ -540,9 +548,11 @@ def process_pockets(protein_path, box_path, output_dir="output"):
         
         # Step 7: Initialize occurrence heatmap for all physical residues
         occurrence_heatmap = {}
+        residue_ligands = {}
         for cid, seq_data in chain_sequences.items():
             for _, resseq in seq_data:
                 occurrence_heatmap[(cid, resseq)] = 0
+                residue_ligands[(cid, resseq)] = set()
         
         biolip_data, uniprot_to_chains = collect_interactive_data(chain_to_uniprot)
         
@@ -593,6 +603,8 @@ def process_pockets(protein_path, box_path, output_dir="output"):
                         # Step 7: Aggregation
                         for resseq in mapped_resseqs:
                             occurrence_heatmap[(chain_id, resseq)] += 1
+                            if entry.get('ligand'):
+                                residue_ligands[(chain_id, resseq)].add(entry['ligand'])
 
         # Step 7: Merge the final score arrays into a single, unified pool
         active_residues = {k: count for k, count in occurrence_heatmap.items() if count > 0}
@@ -606,30 +618,40 @@ def process_pockets(protein_path, box_path, output_dir="output"):
         if active_residues:
             coords, scores, residue_ids = extract_active_coordinates(protein_file, active_residues)
             logging.debug(f"Executing DBSCAN Clustering on {len(coords)} accumulated 3D spatial points...")
-            primary_pocket = cluster_and_select_pocket(coords, scores, residue_ids)
+            clusters = cluster_and_select_pocket(coords, scores, residue_ids)
             
-            if primary_pocket:
-                best_coords, best_residues, best_score = primary_pocket
-                
+            if clusters:
                 with open(reliability_file, 'a', encoding='utf-8') as rf:
-                    rf.write(f"{protein_file.name},{best_score}\n")
+                    for idx, cluster in enumerate(clusters):
+                        best_coords = cluster['coords']
+                        best_residues = cluster['residues']
+                        best_score = cluster['score']
+                        
+                        # Collect ligands for this cluster
+                        cluster_ligands = set()
+                        for cid, resseq in best_residues:
+                            cluster_ligands.update(residue_ligands[(cid, resseq)])
+                        ligands_str = ";".join(sorted(cluster_ligands))
+                        
+                        disp_protein_name = protein_file.name if idx == 0 else ""
+                        rf.write(f"{disp_protein_name},{best_score},{ligands_str}\n")
 
-                logging.debug(f"Final Primary Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
-                
-                # Step 9: Bounding Box Calculation
-                box_params = calculate_bounding_box(best_coords, padding=5.0)
-                logging.debug(f"Calculated Vina Grid Box: Center({box_params['center_x']:.2f}, {box_params['center_y']:.2f}, {box_params['center_z']:.2f}) | Dimensions({box_params['size_x']:.2f}, {box_params['size_y']:.2f}, {box_params['size_z']:.2f})")
-                
-                # Step 10: Volume Check & Dynamic Exhaustiveness
-                volume, exhaustiveness = calculate_volume_and_exhaustiveness(box_params)
-                logging.debug(f"Box Volume: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
-                write_vina_box_file(protein_file, box_path, box_params, exhaustiveness)
-                
-                # NEW CALL: Generate Visual Script
-                generate_pymol_box_script(protein_file, box_params, output_dir=output_dir)
+                        logging.debug(f"Cluster {idx+1} Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
+                        
+                        # Step 9: Bounding Box Calculation
+                        box_params = calculate_bounding_box(best_coords, padding=5.0)
+                        logging.debug(f"Calculated Vina Grid Box {idx+1}: Center({box_params['center_x']:.2f}, {box_params['center_y']:.2f}, {box_params['center_z']:.2f}) | Dimensions({box_params['size_x']:.2f}, {box_params['size_y']:.2f}, {box_params['size_z']:.2f})")
+                        
+                        # Step 10: Volume Check & Dynamic Exhaustiveness
+                        volume, exhaustiveness = calculate_volume_and_exhaustiveness(box_params)
+                        logging.debug(f"Box Volume {idx+1}: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
+                        
+                        if idx == 0:
+                            write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, cluster_idx=None)
+                        generate_pymol_box_script(protein_file, box_params, output_dir=output_dir, cluster_idx=idx+1)
                 
             else:
-                logging.warning("Could not resolve a primary binding pocket via clustering.")
+                logging.warning("Could not resolve any binding pockets via clustering.")
         else:
             logging.warning("No active residues found to cluster.")
         # At this point, active_residues contains the pooled binding residues ready for 3D clustering
