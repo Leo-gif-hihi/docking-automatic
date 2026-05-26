@@ -33,8 +33,12 @@ def download_protein_biopython(protein_code, pdbl, download_dir):
         else:
             logging.debug(f"Successfully downloaded {protein_code} to {expected_filename}")
 
+        if not os.path.exists(expected_filename):
+            raise FileNotFoundError(f"File {expected_filename} was not found after download.")
+
     except Exception as e:
         logging.error(f"Failed to download protein {protein_code}. Error: {e}")
+        raise
 
 def download_proteins(protein_list_file, download_dir):
     """

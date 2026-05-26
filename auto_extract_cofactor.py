@@ -21,24 +21,28 @@ def download_chebi_accession_file(filepath="database_accession.tsv"):
     gz_filepath = filepath + ".gz"
 
     if not os.path.exists(filepath):
-        try:
-            # 1. Download the compressed file
-            logging.info(f"Downloading {gz_filepath} from {url}...")
-            urllib.request.urlretrieve(url, gz_filepath)
-            logging.info(f"Successfully downloaded {gz_filepath}. Extracting...")
-            
-            # 2. Extract the .gz file to the target filepath
-            with gzip.open(gz_filepath, 'rb') as f_in:
-                with open(filepath, 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-                    
-            logging.info(f"Successfully extracted to {filepath}.")
-            
-            # 3. Clean up the compressed .gz file to save disk space
-            os.remove(gz_filepath)
-            
-        except Exception as e:
-            logging.error(f"Failed to download or extract {url}: {e}")
+        for attempt in range(3):
+            try:
+                # 1. Download the compressed file
+                logging.info(f"Downloading {gz_filepath} from {url}... (Attempt {attempt+1}/3)")
+                urllib.request.urlretrieve(url, gz_filepath)
+                logging.info(f"Successfully downloaded {gz_filepath}. Extracting...")
+                
+                # 2. Extract the .gz file to the target filepath
+                with gzip.open(gz_filepath, 'rb') as f_in:
+                    with open(filepath, 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                        
+                logging.info(f"Successfully extracted to {filepath}.")
+                
+                # 3. Clean up the compressed .gz file to save disk space
+                os.remove(gz_filepath)
+                break  # Exit the retry loop on success
+                
+            except Exception as e:
+                logging.error(f"Failed to download or extract {url}: {e}")
+                if attempt < 2:
+                    time.sleep(10)  # Wait before retrying
     else:
         logging.info(f"File {filepath} already exists. Skipping download.")
 
@@ -55,22 +59,26 @@ def get_uniprot_cofactor(uniprot_id):
     """
     time.sleep(1)
     url = f"https://rest.uniprot.org/uniprotkb/search?query=accession_id:{urllib.parse.quote(uniprot_id)}&format=tsv&fields=accession,protein_name,cc_cofactor"
-    try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req) as response:
-            data = response.read().decode('utf-8')
-            
-        lines = data.strip().split('\n')
-        if len(lines) > 1:
-            # The first line is the header, the second line has the data
-            columns = lines[1].split('\t')
-            # cc_cofactor is the 3rd field requested, so index 2
-            if len(columns) >= 3:
-                cc_cofactor = columns[2].strip()
-                chebi_ids = re.findall(r'ChEBI:(CHEBI:\d+)', cc_cofactor)
-                return list(set(chebi_ids))
-    except Exception as e:
-        logging.error(f"Failed to fetch cofactor info for {uniprot_id}: {e}")
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req) as response:
+                data = response.read().decode('utf-8')
+                
+            lines = data.strip().split('\n')
+            if len(lines) > 1:
+                # The first line is the header, the second line has the data
+                columns = lines[1].split('\t')
+                # cc_cofactor is the 3rd field requested, so index 2
+                if len(columns) >= 3:
+                    cc_cofactor = columns[2].strip()
+                    chebi_ids = re.findall(r'ChEBI:(CHEBI:\d+)', cc_cofactor)
+                    return list(set(chebi_ids))
+            return []  # Success but no cofactors
+        except Exception as e:
+            logging.error(f"Failed to fetch cofactor info for {uniprot_id} (Attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(5)
         
     return []
 
