@@ -516,7 +516,7 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     io.save(str(heatmap_file))
     logging.debug(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
 
-def process_pockets(protein_path, box_path, output_dir="output"):
+def process_pockets(protein_path, box_path, output_dir="output", dock_all_pockets=False):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
     from pathlib import Path
     out_path = Path(output_dir)
@@ -621,8 +621,16 @@ def process_pockets(protein_path, box_path, output_dir="output"):
             clusters = cluster_and_select_pocket(coords, scores, residue_ids)
             
             if clusters:
+                # Deduplicate by score, keeping the first (largest)
+                unique_clusters = []
+                seen_scores = set()
+                for c in clusters:
+                    if c['score'] not in seen_scores:
+                        unique_clusters.append(c)
+                        seen_scores.add(c['score'])
+                        
                 with open(reliability_file, 'a', encoding='utf-8') as rf:
-                    for idx, cluster in enumerate(clusters):
+                    for idx, cluster in enumerate(unique_clusters):
                         best_coords = cluster['coords']
                         best_residues = cluster['residues']
                         best_score = cluster['score']
@@ -646,8 +654,9 @@ def process_pockets(protein_path, box_path, output_dir="output"):
                         volume, exhaustiveness = calculate_volume_and_exhaustiveness(box_params)
                         logging.debug(f"Box Volume {idx+1}: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
                         
-                        if idx == 0:
-                            write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, cluster_idx=None)
+                        if dock_all_pockets or idx == 0:
+                            cluster_idx_to_use = idx + 1 if dock_all_pockets else None
+                            write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, cluster_idx=cluster_idx_to_use)
                         generate_pymol_box_script(protein_file, box_params, output_dir=output_dir, cluster_idx=idx+1)
                 
             else:

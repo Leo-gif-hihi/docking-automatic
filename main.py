@@ -22,6 +22,7 @@ def parse_args(args=None):
     parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_list}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
     parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
+    parser.add_argument("--dock_all_pockets", action="store_true", help="Generate box files for all pockets and dock ligands into all of them. Default is to only use the highest-scoring pocket.")
     parser.add_argument("--identify_pockets_only", action="store_true", help="Only identify pockets and exit; skip docking and ranking")
     parser.add_argument("--clean_mode", type=str, choices=["auto","global", "local"], default="auto", help="Elimination mode for cleaning protein structures")
     parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
@@ -61,10 +62,14 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path):
         return
 
     for protein_base in prepared_proteins:
-        box_file = box_path / f"{protein_base}.box.txt"
+        box_files = list(box_path.glob(f"{protein_base}.box.txt")) + list(box_path.glob(f"{protein_base}_cluster*.box.txt"))
+        if not box_files:
+            logging.warning(f"No box files found for {protein_base} in {box_path}")
+            continue
 
-        for ligand_base in prepared_ligands:
-            yield protein_base, ligand_base, box_file
+        for box_file in box_files:
+            for ligand_base in prepared_ligands:
+                yield protein_base, ligand_base, box_file
 
 def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, cpus):
     """Runs the docking pipeline for a single pair (already prepared)."""
@@ -162,7 +167,7 @@ def main():
         logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
         if args.identify_pockets_only and args.skip_autopoc:
             logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
-        process_pockets(protein_path, box_path, output_dir=str(vis_dir))
+        process_pockets(protein_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
         logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
         if args.identify_pockets_only:
             logging.info("\n\033[1;32m[WORKFLOW] Pocket identification complete. Exiting (identify-only mode).\033[0m")
@@ -194,15 +199,16 @@ def main():
     step_start = time.time()
     logging.info(f"\n\033[1;32m[WORKFLOW] Generated docking jobs. Starting docking process for {total_jobs} combinations...\033[0m")
     for i, (protein_base, ligand_base, box_file) in enumerate(jobs_list, 1):
+        protein_pocket_base = box_file.name.replace(".box.txt", "")
         logging.info(f"Docking {i}/{total_jobs} complexes")
-        logging.debug(f"\n--- Docking {ligand_base} to {protein_base} ---")
+        logging.debug(f"\n--- Docking {ligand_base} to {protein_pocket_base} ---")
         
         vina_out_dir = Path(args.output_dir) / "vina_output"
-        complex_output_dir = vina_out_dir / f"{protein_base}_{ligand_base}"
+        complex_output_dir = vina_out_dir / f"{protein_pocket_base}_{ligand_base}"
         os.makedirs(complex_output_dir, exist_ok=True)
 
         # CHECK IF VINA LOG ALREADY EXISTS AND IS COMPLETE
-        expected_log_file = complex_output_dir / f"{protein_base}_{ligand_base}_vina.log"
+        expected_log_file = complex_output_dir / f"{protein_pocket_base}_{ligand_base}_vina.log"
         if expected_log_file.exists():
             with open(expected_log_file, "r") as log_file:
                 log_content = log_file.read()
@@ -227,7 +233,7 @@ def main():
             
         success = run_docking_pipeline(
             protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
-            protein_base, ligand_base, args.cpus
+            protein_pocket_base, ligand_base, args.cpus
         )
         if not success:
             error_jobs.append(f"{protein_base}\t{ligand_base}\tDocking Failed")
