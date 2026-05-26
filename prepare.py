@@ -109,6 +109,40 @@ def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
         logging.debug(f" -> Skipped {filename}: No atoms left after cleaning.")
         return None
 
+def get_suggested_cofactors(filepath):
+    """Helper to query UniProt mapping logic and return suggested cofactors."""
+    from pocket import extract_uniprot_ids_from_cif
+    from auto_extract_cofactor import get_pdb_cofactors_for_uniprot
+    
+    chain_to_uniprot = extract_uniprot_ids_from_cif(filepath)
+    essential_cofactors = set()
+    uniprot_to_pdb_mapping = {}
+    for chain_id, uniprot_id in chain_to_uniprot.items():
+        if uniprot_id not in uniprot_to_pdb_mapping:
+            uniprot_to_pdb_mapping[uniprot_id] = get_pdb_cofactors_for_uniprot(uniprot_id)
+        
+        pdb_mapping = uniprot_to_pdb_mapping[uniprot_id]
+        for chebi, pdb_list in pdb_mapping.items():
+            for pdb_id in pdb_list:
+                essential_cofactors.add(pdb_id.upper())
+    return essential_cofactors
+
+def generate_file_stats(filepath, file_hetatms, to_eliminate, suggested=None):
+    """Helper to generate stats dictionary for a processed file."""
+    filename = os.path.basename(filepath)
+    if suggested is None:
+        suggested = get_suggested_cofactors(filepath)
+        
+    removed = [h for h in file_hetatms if h in to_eliminate]
+    kept = [h for h in file_hetatms if h not in to_eliminate]
+    
+    return {
+        "Protein": filename,
+        "Kept Ligands": "; ".join(kept),
+        "Removed Ligands": "; ".join(removed),
+        "Suggested Cofactors": "; ".join(suggested)
+    }
+
 def clean_global_mode(pdb_files, output_dir):
     """Runs the cleaning process in global mode (one prompt for all files)."""
     logging.info(f"Scanning {len(pdb_files)} files for HETATM residues...")
@@ -134,12 +168,17 @@ def clean_global_mode(pdb_files, output_dir):
     sel_str = get_selection_string(to_eliminate, all_hetatms)
     
     cleaned_paths = []
+    file_stats = {}
     for filepath, structure in structures:
         cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, sel_str)
         if cleaned_pdb_path:
             cleaned_paths.append(cleaned_pdb_path)
             
-    return cleaned_paths
+            filename = os.path.basename(filepath)
+            file_hetatms = get_hetatms(structure)
+            file_stats[filename] = generate_file_stats(filepath, file_hetatms, to_eliminate)
+            
+    return cleaned_paths, file_stats
 
 def clean_local_mode(pdb_files, output_dir):
     """Runs the cleaning process in local mode (prompt per file)."""
@@ -147,6 +186,7 @@ def clean_local_mode(pdb_files, output_dir):
     logging.info("Tip: You can press Ctrl+C at any prompt to escape and stop processing.\n")
     
     cleaned_paths = []
+    file_stats = {}
     for filepath in pdb_files:
         filename = os.path.basename(filepath)
         structure = parseMMCIF(filepath)
@@ -168,18 +208,18 @@ def clean_local_mode(pdb_files, output_dir):
         cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, sel_str)
         if cleaned_pdb_path:
             cleaned_paths.append(cleaned_pdb_path)
+            
+            file_stats[filename] = generate_file_stats(filepath, file_hetatms, to_eliminate)
         logging.debug("")  # Blank line for readability between files if in debug mode
         
-    return cleaned_paths
+    return cleaned_paths, file_stats
 
 def clean_auto_mode(pdb_files, output_dir):
     """Runs the cleaning process in auto mode (keeps essential cofactors automatically)."""
-    from pocket import extract_uniprot_ids_from_cif
-    from auto_extract_cofactor import get_pdb_cofactors_for_uniprot
-    
     logging.debug(f"Running in AUTO mode. Scanning {len(pdb_files)} files individually.")
     
     cleaned_paths = []
+    file_stats = {}
     for filepath in pdb_files:
         filename = os.path.basename(filepath)
         structure = parseMMCIF(filepath)
@@ -189,30 +229,19 @@ def clean_auto_mode(pdb_files, output_dir):
         file_hetatms = get_hetatms(structure)
         logging.debug(f"--- {filename} ---")
         
+        suggested = set()
+        to_eliminate = []
         if not file_hetatms:
             logging.debug("No HETATM residues found. Just cleaning water.")
-            to_eliminate = []
             sel_str = get_selection_string(to_eliminate, file_hetatms)
         else:
-            chain_to_uniprot = extract_uniprot_ids_from_cif(filepath)
+            suggested = get_suggested_cofactors(filepath)
             
-            essential_cofactors = set()
-            uniprot_to_pdb_mapping = {}
-            for chain_id, uniprot_id in chain_to_uniprot.items():
-                if uniprot_id not in uniprot_to_pdb_mapping:
-                    uniprot_to_pdb_mapping[uniprot_id] = get_pdb_cofactors_for_uniprot(uniprot_id)
-                
-                pdb_mapping = uniprot_to_pdb_mapping[uniprot_id]
-                for chebi, pdb_list in pdb_mapping.items():
-                    for pdb_id in pdb_list:
-                        essential_cofactors.add(pdb_id.upper())
-            
-            to_eliminate = []
             for hetatm in file_hetatms:
-                if hetatm.upper() not in essential_cofactors:
+                if hetatm.upper() not in suggested:
                     to_eliminate.append(hetatm)
             
-            kept = essential_cofactors & set([h.upper() for h in file_hetatms])
+            kept = suggested & set([h.upper() for h in file_hetatms])
             kept_str = ", ".join(kept) if kept else "none"
             action_desc = "ALL HETATM residues in this file" if set(to_eliminate) == file_hetatms else ", ".join(to_eliminate)
             logging.debug(f"Action: Eliminating {action_desc} (Kept {kept_str} as essential cofactors).")
@@ -222,9 +251,11 @@ def clean_auto_mode(pdb_files, output_dir):
         cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, sel_str)
         if cleaned_pdb_path:
             cleaned_paths.append(cleaned_pdb_path)
+            
+            file_stats[filename] = generate_file_stats(filepath, file_hetatms, to_eliminate, suggested)
         logging.debug("")
         
-    return cleaned_paths
+    return cleaned_paths, file_stats
 
 def run_reduce2(protein_path, protein_protonated):
     """Runs mmtbx.reduce2 to add hydrogens and optimize the structure."""
@@ -284,6 +315,7 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
 
     # Only run the cleaning modes on files that actually need it
     newly_cleaned_paths = []
+    file_stats = {}
     if files_to_clean:
         if skip_cofactor:
             # Skip all mode logic: only remove water, keep all HETATM cofactors
@@ -295,13 +327,38 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
                 cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, "protein or (not water)")
                 if cleaned_pdb_path:
                     newly_cleaned_paths.append(cleaned_pdb_path)
+                    
+                    filename = os.path.basename(filepath)
+                    file_hetatms = get_hetatms(structure)
+                    file_stats[filename] = generate_file_stats(filepath, file_hetatms, [])
         elif mode == "global":
-            newly_cleaned_paths = clean_global_mode(files_to_clean, output_dir)
+            newly_cleaned_paths, file_stats = clean_global_mode(files_to_clean, output_dir)
         elif mode == "local":
-            newly_cleaned_paths = clean_local_mode(files_to_clean, output_dir)
+            newly_cleaned_paths, file_stats = clean_local_mode(files_to_clean, output_dir)
         elif mode == "auto":
-            newly_cleaned_paths = clean_auto_mode(files_to_clean, output_dir)
+            newly_cleaned_paths, file_stats = clean_auto_mode(files_to_clean, output_dir)
             
+    # --- Manage CSV Stats ---
+    if file_stats:
+        import csv
+        csv_path = os.path.join(output_dir, "prepare_protein_summary.csv")
+        fieldnames = ["Protein", "Kept Ligands", "Removed Ligands", "Suggested Cofactors"]
+        existing_stats = {}
+        if os.path.exists(csv_path):
+            with open(csv_path, "r", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    existing_stats[row["Protein"]] = row
+                    
+        # Update with new stats
+        existing_stats.update(file_stats)
+        
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row_key in sorted(existing_stats.keys()):
+                writer.writerow(existing_stats[row_key])
+
     # Combine lists so downstream tasks process all files
     all_cleaned_paths = already_cleaned_paths + newly_cleaned_paths
         
