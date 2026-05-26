@@ -387,7 +387,7 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
     logging.info("Batch cleaning complete!")
     return prepared_results
 
-def run_scrub_ligand(ligand_path, ligand_scrubbed, ph):
+def run_scrub_ligand(ligand_path, ligand_scrubbed, ph, generate_isomers):
     """Runs scrub.py to scrub and protonate the ligand."""
     import subprocess
     from pathlib import Path
@@ -400,6 +400,8 @@ def run_scrub_ligand(ligand_path, ligand_scrubbed, ph):
         "scrub.py", str(ligand_path), "-o", str(ligand_scrubbed), 
         "--ph", str(ph)
     ]
+    if not generate_isomers:
+        cmd_scrub.extend(["--skip_acidbase", "--skip_tautomers"])
     subprocess.run(cmd_scrub, check=True, capture_output=True, text=True)
 
 
@@ -467,7 +469,7 @@ def split_scrubbed_ligand(ligand_scrubbed, output_dir, ligand_base):
         
     return split_files
 
-def prepare_ligand(ligand_file: str, ph: float, output_dir: str):
+def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomers: bool):
     """
     Prepares the ligand using Molscrub and Meeko.
     Returns the path to the resulting PDBQT file.
@@ -486,7 +488,7 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str):
     logging.debug(f"Preparing ligand {ligand_file}...")
 
     # 3. Scrubbing & Protonating Ligand (Molscrub)
-    run_scrub_ligand(ligand_path, ligand_scrubbed, ph)
+    run_scrub_ligand(ligand_path, ligand_scrubbed, ph, generate_isomers)
 
     # 3.1 Split Scrubbed Ligand by Isomer and find lowest energy conformer
     isomer_files = split_scrubbed_ligand(ligand_scrubbed, prepared_dir, ligand_base)
@@ -501,7 +503,7 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str):
 
     return pdbqt_files
 
-def prepare_ligands(ligand_path, ph, output_dir):
+def prepare_ligands(ligand_path, ph, output_dir, generate_isomers=False):
     """
     Prepares all ligands in the given directory.
     Returns a dictionary mapping ligand names to their PDBQT paths.
@@ -509,7 +511,7 @@ def prepare_ligands(ligand_path, ph, output_dir):
     from pathlib import Path
     prepared_ligands = {}
     for lig_file in Path(ligand_path).glob("*.sdf"):
-        lig_pdbqts = prepare_ligand(str(lig_file), ph, output_dir)
+        lig_pdbqts = prepare_ligand(str(lig_file), ph, output_dir, generate_isomers)
         for lig_pdbqt in lig_pdbqts:
             prepared_ligands[lig_pdbqt.stem] = lig_pdbqt
     return prepared_ligands
