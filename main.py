@@ -160,22 +160,8 @@ def main():
 
     ligand_path = Path(args.ligand_dir)
     box_path = Path(args.box_dir)
-    # Identify pockets (either as part of pipeline or as a dedicated identify-only run)
-    vis_dir = Path(args.output_dir) / "visualization_pocket"
-    os.makedirs(vis_dir, exist_ok=True)
-    if args.identify_pockets_only or not args.skip_autopoc:
-        step_start = time.time()
-        logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
-        if args.identify_pockets_only and args.skip_autopoc:
-            logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
-        process_pockets(protein_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
-        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
-        if args.identify_pockets_only:
-            logging.info("\n\033[1;32m[WORKFLOW] Pocket identification complete. Exiting (identify-only mode).\033[0m")
-            return
-
-    if not all(p.exists() for p in (protein_path, ligand_path, box_path)):
-        logging.error("Error: One or more input directories (protein, ligand, box) do not exist.")
+    if not all(p.exists() for p in (protein_path, ligand_path)):
+        logging.error("Error: One or more input directories (protein, ligand) do not exist.")
         return
     
     # Clean and prepare proteins
@@ -193,6 +179,24 @@ def main():
     prepared_ligands = prepare_ligands(ligand_path, args.ph, ligand_prepared_dir, generate_isomers=args.generate_isomers)
         
     logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+
+    # Identify pockets (either as part of pipeline or as a dedicated identify-only run)
+    vis_dir = Path(args.output_dir) / "visualization_pocket"
+    os.makedirs(vis_dir, exist_ok=True)
+    if args.identify_pockets_only or not args.skip_autopoc:
+        step_start = time.time()
+        logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
+        if args.identify_pockets_only and args.skip_autopoc:
+            logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
+        process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
+        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+        if args.identify_pockets_only:
+            logging.info("\n\033[1;32m[WORKFLOW] Workflow complete. Exiting (identify-only mode).\033[0m")
+            return
+
+    if not box_path.exists() and not args.skip_autopoc:
+        logging.error("Error: Box directory does not exist after pocket identification.")
+        return
 
     jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_path))
     total_jobs = len(jobs_list)

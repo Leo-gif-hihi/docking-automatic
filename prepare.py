@@ -50,7 +50,7 @@ def construct_cryst1_from_cif(cif_filepath):
         from Bio.PDB.MMCIF2Dict import MMCIF2Dict
         mmcif_dict = MMCIF2Dict(cif_filepath)
         
-        if '_cell.length_a' in mmcif_dict:
+        if '_cell.length_ab' in mmcif_dict:
             a = float(mmcif_dict['_cell.length_a'][0])
             b = float(mmcif_dict['_cell.length_b'][0])
             c = float(mmcif_dict['_cell.length_c'][0])
@@ -88,20 +88,14 @@ def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
     if clean_selection:
             # --- Construct CRYST1 line for reduce2 ---
             cryst1_line = construct_cryst1_from_cif(original_filepath)
-            
-            # CRYST1 line is mandatory
-            if not cryst1_line:
-                logging.error(f" -> Skipped {filename}: Could not construct mandatory CRYST1 line.")
-                return None
-                
             writePDB(out_filepath, clean_selection)
-            
-            # insert it on the first line of the cleaned file
-            with open(out_filepath, 'r') as f:
-                content = f.read()
-            with open(out_filepath, 'w') as f:
-                f.write(cryst1_line)
-                f.write(content)
+            if cryst1_line:
+                # insert it on the first line of the cleaned file
+                with open(out_filepath, 'r') as f:
+                    content = f.read()
+                with open(out_filepath, 'w') as f:
+                    f.write(cryst1_line)
+                    f.write(content)
 
             logging.debug(f" -> Saved: {out_filepath}")
             return out_filepath
@@ -378,6 +372,26 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
 
         # 1. Adding Hydrogens & Optimizing (REDUCE2)
         run_reduce2(protein_path, protein_protonated)
+
+        # Inject DBREF lines into the protonated PDB file
+        from pocket import extract_uniprot_ids_from_cif
+        original_cif = Path(input_dir) / f"{protein_base}.cif"
+        if original_cif.exists() and protein_protonated.exists():
+            chain_to_uniprot = extract_uniprot_ids_from_cif(str(original_cif))
+            if chain_to_uniprot:
+                dbref_lines = []
+                for chain, unp_id in chain_to_uniprot.items():
+                    # Format: DBREF  XXXX C    1  9999  UNP    P12345   P12345           1  9999
+                    dbref_line = f"DBREF  XXXX {chain:<1}    1  9999  UNP    {unp_id:<8} {unp_id:<8}       1  9999\n"
+                    dbref_lines.append(dbref_line)
+                
+                # Check if already injected
+                with open(protein_protonated, 'r') as f:
+                    content = f.read()
+                if not content.startswith("DBREF"):
+                    with open(protein_protonated, 'w') as f:
+                        f.write("".join(dbref_lines))
+                        f.write(content)
 
         # 2. Preparing Receptor (Meeko)
         run_meeko_receptor(protein_protonated, protein_prep_out)

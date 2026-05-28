@@ -50,6 +50,23 @@ def extract_uniprot_ids_from_cif(cif_file):
                 
     return chain_to_uniprot
 
+def extract_uniprot_ids_from_pdb(pdb_file):
+    """
+    Parses a PDB file to extract UniProt IDs for each chain from DBREF records.
+    Returns a dictionary mapping chain ID to UniProt ID.
+    """
+    chain_to_uniprot = {}
+    with open(pdb_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.startswith("DBREF"):
+                if len(line) >= 41:
+                    chain_id = line[12].strip()
+                    db_name = line[26:29].strip()
+                    accession = line[33:41].strip()
+                    if db_name == "UNP":
+                        chain_to_uniprot[chain_id] = accession
+    return chain_to_uniprot
+
 def fetch_biolip_data(uniprot_id, max_retries=3):
     """
     Fetches empirical binding data from the BioLiP API for a given UniProt ID.
@@ -161,6 +178,36 @@ def extract_sequence_from_cif_atoms(cif_file):
         
     return chain_sequences
 
+def extract_sequence_from_pdb_atoms(pdb_file):
+    """
+    Extracts the amino acid sequence for each chain physically present in the PDB file 
+    based solely on ATOM records.
+    Returns a dict mapping chain ID to a list of tuples: (1-letter-AA, ResSeq).
+    """
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("protein", pdb_file)
+    chain_sequences = {}
+
+    for model in structure:
+        for chain in model:
+            chain_id = chain.get_id()
+            seq_data = []
+            for residue in chain:
+                if residue.get_id()[0] != " ":
+                    continue
+                if 'CA' in residue:
+                    resname = residue.get_resname().strip().upper()
+                    resseq = residue.get_id()[1]
+                    aa_1_letter = protein_letters_3to1.get(resname, 'X')
+                    seq_data.append((aa_1_letter, resseq))
+            
+            if seq_data:
+                chain_sequences[chain_id] = seq_data
+                
+        break
+        
+    return chain_sequences
+
 def align_sequences(biolip_sequence, pdb_atom_sequence):
     """
     Performs a Needleman-Wunsch global alignment between the BioLiP sequence 
@@ -254,7 +301,7 @@ def extract_active_coordinates(cif_file, active_residues):
     Extracts 3D coordinates (x,y,z) for the Alpha-Carbon of high-scoring residues.
     Returns coords (Nx3 NumPy array), scores (Nx1 NumPy array), and corresponding residue mappings.
     """
-    parser = MMCIFParser(QUIET=True)
+    parser = PDBParser(QUIET=True)
     structure = parser.get_structure("protein", cif_file)
     coords = []
     scores = []
@@ -388,7 +435,8 @@ def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, clus
     import os
     os.makedirs(box_path, exist_ok=True)
     suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
-    box_file = box_path / f"{protein_file.stem}{suffix}.box.txt"
+    protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
+    box_file = box_path / f"{protein_base}{suffix}.box.txt"
     
     with open(box_file, 'w', encoding='utf-8') as f:
         f.write(f"center_x = {box_params['center_x']:.3f}\n")
@@ -412,8 +460,9 @@ def generate_pymol_box_script(protein_file, box_params, output_dir="output", clu
     out_path.mkdir(exist_ok=True, parents=True)
     
     suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
-    pml_file = out_path / f"{protein_file.stem}{suffix}_visualize.pml"
-    heatmap_file = f"{protein_file.stem}_heatmap.pdb"
+    protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
+    pml_file = out_path / f"{protein_base}{suffix}_visualize.pml"
+    heatmap_file = f"{protein_base}_heatmap.pdb"
     
     # Calculate box corners based on center and size
     min_x = box_params['center_x'] - (box_params['size_x'] / 2)
@@ -490,7 +539,7 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     """
     import os
     from pathlib import Path
-    parser = MMCIFParser(QUIET=True)
+    parser = PDBParser(QUIET=True)
     structure = parser.get_structure("protein", protein_file)
     
     max_score = max(active_residues.values()) if active_residues else 0
@@ -512,7 +561,8 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     
     io = PDBIO()
     io.set_structure(structure)
-    heatmap_file = out_path / f"{protein_file.stem}_heatmap.pdb"
+    protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
+    heatmap_file = out_path / f"{protein_base}_heatmap.pdb"
     io.save(str(heatmap_file))
     logging.debug(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
 
@@ -525,16 +575,16 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     with open(reliability_file, 'w', encoding='utf-8') as f:
         f.write("protein_name,pocket_score,ligands\n")
 
-    protein_files = list(protein_path.glob("*.cif"))
+    protein_files = list(protein_path.glob("*FH.pdb"))
     if not protein_files:
-        logging.error(f"No .cif files found in {protein_path} for pocket identification.")
+        logging.error(f"No *FH.pdb files found in {protein_path} for pocket identification.")
         return
 
     total_proteins = len(protein_files)
     for i, protein_file in enumerate(protein_files, 1):
         logging.info(f"Completed {i}/{total_proteins} proteins")
         logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
-        chain_to_uniprot = extract_uniprot_ids_from_cif(protein_file)
+        chain_to_uniprot = extract_uniprot_ids_from_pdb(protein_file)
         
         if not chain_to_uniprot:
             logging.warning(f"No UniProt mappings found in DBREF records for {protein_file.name}.")
@@ -543,7 +593,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         logging.debug(f"Extracted UniProt mappings: {chain_to_uniprot}")
         
         # Extract sequences physically present in the ATOM records to avoid missing loops
-        chain_sequences = extract_sequence_from_cif_atoms(protein_file)
+        chain_sequences = extract_sequence_from_pdb_atoms(protein_file)
         logging.debug(f"Extracted physical sequences for chains: {list(chain_sequences.keys())}")
         
         # Step 7: Initialize occurrence heatmap for all physical residues
