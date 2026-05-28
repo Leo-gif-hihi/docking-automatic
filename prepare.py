@@ -41,44 +41,6 @@ def prompt_elimination(hetatms_set):
         return list(hetatms_set)
     return [res.strip() for res in user_input.split(',')]
 
-def construct_cryst1_from_cif(cif_filepath):
-    """
-    Parses an mmCIF file and constructs a PDB-formatted CRYST1 line.
-    Ensures exact column width formatting per the wwPDB format v3.3.
-    """
-    try:
-        from Bio.PDB.MMCIF2Dict import MMCIF2Dict
-        mmcif_dict = MMCIF2Dict(cif_filepath)
-        
-        if '_cell.length_ab' in mmcif_dict:
-            a = float(mmcif_dict['_cell.length_a'][0])
-            b = float(mmcif_dict['_cell.length_b'][0])
-            c = float(mmcif_dict['_cell.length_c'][0])
-            alpha = float(mmcif_dict['_cell.angle_alpha'][0])
-            beta = float(mmcif_dict['_cell.angle_beta'][0])
-            gamma = float(mmcif_dict['_cell.angle_gamma'][0])
-            
-            # Extract space group and strip any potential quotes
-            sg = mmcif_dict.get('_symmetry.space_group_name_H-M', ['P 1'])[0]
-            sg = sg.strip("'\"")
-            
-            # Safely extract Z value
-            z_str = mmcif_dict.get('_cell.Z_PDB', ['1'])[0]
-            try:
-                z = int(z_str)
-            except ValueError:
-                z = 1
-                
-            # Construct the CRYST1 string enforcing exact column widths
-            # 1-6(Record name), 7-15(a), 16-24(b), 25-33(c), 34-40(alpha), 41-47(beta), 48-54(gamma)
-            # 55(Space), 56-66(Space group), 67-70(Z)
-            cryst1_line = f"CRYST1{a:9.3f}{b:9.3f}{c:9.3f}{alpha:7.2f}{beta:7.2f}{gamma:7.2f} {sg[:11]:<11s}{z:4d}\n"
-            return cryst1_line
-    except Exception as e:
-        logging.warning(f"Could not construct CRYST1 for {cif_filepath}: {e}")
-        
-    return None
-
 def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
     """Applies the selection string to clean the structure and saves it to the output directory."""
     filename = os.path.basename(original_filepath).replace('.cif', '.pdb')
@@ -86,17 +48,7 @@ def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
     out_filepath = os.path.join(output_dir, filename)
     
     if clean_selection:
-            # --- Construct CRYST1 line for reduce2 ---
-            cryst1_line = construct_cryst1_from_cif(original_filepath)
             writePDB(out_filepath, clean_selection)
-            if cryst1_line:
-                # insert it on the first line of the cleaned file
-                with open(out_filepath, 'r') as f:
-                    content = f.read()
-                with open(out_filepath, 'w') as f:
-                    f.write(cryst1_line)
-                    f.write(content)
-
             logging.debug(f" -> Saved: {out_filepath}")
             return out_filepath
     else:
