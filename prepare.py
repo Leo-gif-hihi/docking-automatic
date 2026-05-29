@@ -210,29 +210,39 @@ def run_reduce2(protein_path, protein_protonated):
 
     if Path(protein_protonated).exists():
         logging.debug(f"Skipping REDUCE2: {protein_protonated} already exists.")
-        return
+        return True
 
     cmd_reduce2 = [
         "mmtbx.reduce2", str(protein_path), "approach=add", 
         "add_flip_movers=True", f"output.filename={protein_protonated}"
     ]
-    subprocess.run(cmd_reduce2, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(cmd_reduce2, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"REDUCE2 failed for {protein_path}:\n{e.stderr}")
+        return False
 
 
-def run_meeko_receptor(protein_protonated, protein_prep_out):
+def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
     """Runs mk_prepare_receptor.py (Meeko) to prepare the receptor."""
     import subprocess
     from pathlib import Path
 
-    if Path(protein_prep_out).exists():
-        logging.debug(f"Skipping Meeko: {protein_prep_out} already exists.")
-        return
+    if Path(protein_pdbqt).exists():
+        logging.debug(f"Skipping Meeko: {protein_pdbqt} already exists.")
+        return True
 
     cmd_meeko = [
         "mk_prepare_receptor.py", "-i", str(protein_protonated), 
-        "-o", str(protein_prep_out), "-p"
+        "-o", str(protein_prep_out), "-p", "-a"
     ]
-    subprocess.run(cmd_meeko, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(cmd_meeko, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Meeko failed to prepare {protein_protonated}:\n{e.stderr}")
+        return False
 
 def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
     """Main workflow to orchestrate the cleaning process."""
@@ -323,7 +333,9 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
         logging.debug(f"Preparing receptor {cleaned_pdb_path}...")
 
         # 1. Adding Hydrogens & Optimizing (REDUCE2)
-        run_reduce2(protein_path, protein_protonated)
+        if not run_reduce2(protein_path, protein_protonated):
+            logging.error(f"Failed to protonate {protein_base}. Skipping.")
+            continue
 
         # Inject DBREF lines into the protonated PDB file
         from pocket import extract_uniprot_ids_from_cif
@@ -346,9 +358,10 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
                         f.write(content)
 
         # 2. Preparing Receptor (Meeko)
-        run_meeko_receptor(protein_protonated, protein_prep_out)
-        
-        prepared_results[protein_base] = protein_pdbqt
+        if run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
+            prepared_results[protein_base] = protein_pdbqt
+        else:
+            logging.error(f"Failed to prepare receptor for {protein_base}. Skipping.")
         
     logging.info("Batch cleaning complete!")
     return prepared_results

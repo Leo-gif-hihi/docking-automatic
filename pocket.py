@@ -720,9 +720,11 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         # At this point, active_residues contains the pooled binding residues ready for 3D clustering
 
     if unprocessed_proteins:
-        unprocessed_file = out_path / "unprocessed_proteins.txt"
+        unprocessed_file = protein_path / "unprocessed_proteins.txt"
         with open(unprocessed_file, "w", encoding="utf-8") as f:
             for p in unprocessed_proteins:
                 f.write(f"{p}\n")
         logging.warning(f"Saved {len(unprocessed_proteins)} unprocessed proteins to {unprocessed_file}")
+        return unprocessed_file
+    return None
 
