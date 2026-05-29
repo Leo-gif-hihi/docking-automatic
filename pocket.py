@@ -580,6 +580,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         logging.error(f"No *FH.pdb files found in {protein_path} for pocket identification.")
         return
 
+    unprocessed_proteins = []
     total_proteins = len(protein_files)
     for i, protein_file in enumerate(protein_files, 1):
         logging.info(f"Completed {i}/{total_proteins} proteins")
@@ -588,6 +589,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         
         if not chain_to_uniprot:
             logging.warning(f"No UniProt mappings found in DBREF records for {protein_file.name}.")
+            unprocessed_proteins.append(protein_file.name)
             continue
             
         logging.debug(f"Extracted UniProt mappings: {chain_to_uniprot}")
@@ -711,7 +713,16 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                 
             else:
                 logging.warning("Could not resolve any binding pockets via clustering.")
+                unprocessed_proteins.append(protein_file.name)
         else:
             logging.warning("No active residues found to cluster.")
+            unprocessed_proteins.append(protein_file.name)
         # At this point, active_residues contains the pooled binding residues ready for 3D clustering
+
+    if unprocessed_proteins:
+        unprocessed_file = out_path / "unprocessed_proteins.txt"
+        with open(unprocessed_file, "w", encoding="utf-8") as f:
+            for p in unprocessed_proteins:
+                f.write(f"{p}\n")
+        logging.warning(f"Saved {len(unprocessed_proteins)} unprocessed proteins to {unprocessed_file}")
 

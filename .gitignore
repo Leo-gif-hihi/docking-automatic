@@ -1,8 +1,12 @@
 # Ignore all files
 *
 
+
 # Allow directories (so Git can find nested scripts if any)
 !*/
+
+# Ignore p2rank
+p2rank_2.6-alpha/
 
 # Allow script files
 !*.py
