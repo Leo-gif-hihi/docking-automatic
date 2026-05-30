@@ -2,6 +2,7 @@ import os
 import subprocess
 import logging
 import csv
+import shutil
 from pathlib import Path
 
 def get_protein_base(protein):
@@ -59,8 +60,17 @@ def run_prank_predict(ds_file_path, output_dir):
     """
     Executes the external prank predict command using the provided dataset.
     """
+    prank_path = shutil.which("prank")
+    if not prank_path:
+        logging.error("Command 'prank' not found in PATH. Please ensure p2rank is installed.")
+        return False
+        
+    # Resolve symlinks because the prank bash script relies on its own location 
+    # for resolving the java classpath, which breaks if called via a symlink.
+    real_prank_path = os.path.realpath(prank_path)
+    
     cmd = [
-        "prank",
+        real_prank_path,
         "predict",
         str(Path(ds_file_path).absolute()),
         "-o",
