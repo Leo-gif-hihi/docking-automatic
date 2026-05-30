@@ -30,6 +30,8 @@ def parse_args(args=None):
     parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
     parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water (default: keep cofactors, only delete water)")
     parser.add_argument("--generate_isomers", action="store_true", help="Generate acid-base and tautomer isomers during ligand preparation (default is to skip)")
+    parser.add_argument("--af3_dir", type=str, default="protein_af3", help="Path to AlphaFold3 structure directory")
+    parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -171,6 +173,16 @@ def main():
     step_start = time.time()
     logging.info("\n\033[1;32m[WORKFLOW] Preparing proteins...\033[0m")
     prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor)
+    
+    af3_path = Path(args.af3_dir)
+    if af3_path.exists():
+        logging.info(f"\n\033[1;32m[WORKFLOW] Preparing AlphaFold3 proteins from {args.af3_dir}...\033[0m")
+        af3_prepared = prepare_proteins(input_dir=str(af3_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, is_af3=True, skip_minimization=args.skip_minimization)
+        if af3_prepared:
+            prepared_proteins.update(af3_prepared)
+    elif args.af3_dir != "protein_af3":
+        logging.warning(f"AlphaFold3 path {args.af3_dir} not found. Skipping AF3 preparation.")
+
     protein_clean_path = Path(protein_clean_dir)
     logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 

@@ -224,6 +224,42 @@ def run_reduce2(protein_path, protein_protonated):
         return False
 
 
+def run_openmm_minimization(protein_protonated):
+    """Minimizes the structure using OpenMM (unconstrained)."""
+    try:
+        from openmm.app import PDBFile, ForceField, Simulation, HBonds, NoCutoff
+        from openmm import LangevinMiddleIntegrator
+        from openmm.unit import kelvin, picosecond, kilojoules_per_mole, nanometer
+    except ImportError:
+        logging.error("OpenMM is required to minimize AlphaFold3 structures but is not installed.")
+        return False
+
+    try:
+        logging.info(f"Running OpenMM unconstrained minimization on {protein_protonated}")
+        pdb = PDBFile(str(protein_protonated))
+        
+        forcefield = ForceField('amber14-all.xml', 'implicit/gbn2.xml')
+        system = forcefield.createSystem(pdb.topology, nonbondedMethod=NoCutoff, constraints=HBonds)
+        
+        integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picosecond)
+        simulation = Simulation(pdb.topology, system, integrator)
+        simulation.context.setPositions(pdb.positions)
+        
+        logging.debug("Minimizing energy...")
+        simulation.minimizeEnergy()
+        
+        positions = simulation.context.getState(getPositions=True).getPositions()
+        
+        # Overwrite the protein_protonated file with the minimized structure
+        with open(protein_protonated, 'w') as f:
+            PDBFile.writeFile(simulation.topology, positions, f)
+            
+        logging.debug(f"Saved minimized structure to {protein_protonated}")
+        return True
+    except Exception as e:
+        logging.error(f"OpenMM minimization failed: {e}")
+        return False
+
 def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
     """Runs mk_prepare_receptor.py (Meeko) to prepare the receptor."""
     import subprocess
@@ -244,13 +280,14 @@ def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
         logging.error(f"Meeko failed to prepare {protein_protonated}:\n{e.stderr}")
         return False
 
-def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
+def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, is_af3=False, skip_minimization=False):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         logging.debug(f"Created output directory: {output_dir}")
     
     pdb_files = glob.glob(os.path.join(input_dir, "*.cif"))
+        
     if not pdb_files:
         logging.error(f"No CIF files found in '{input_dir}'. Please check your folder.")
         return {}
@@ -336,10 +373,17 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False):
         if not run_reduce2(protein_path, protein_protonated):
             logging.error(f"Failed to protonate {protein_base}. Skipping.")
             continue
+            
+        # 1.5 Minimize AlphaFold3 Structures with OpenMM
+        if is_af3 and not skip_minimization:
+            if not run_openmm_minimization(protein_protonated):
+                logging.error(f"Failed to minimize {protein_base}. Skipping.")
+                continue
 
         # Inject DBREF lines into the protonated PDB file
         from pocket import extract_uniprot_ids_from_cif
         original_cif = Path(input_dir) / f"{protein_base}.cif"
+            
         if original_cif.exists() and protein_protonated.exists():
             chain_to_uniprot = extract_uniprot_ids_from_cif(str(original_cif))
             if chain_to_uniprot:
