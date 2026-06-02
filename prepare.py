@@ -203,6 +203,41 @@ def clean_auto_mode(pdb_files, output_dir):
         
     return cleaned_paths, file_stats
 
+def run_pdbfixer(protein_path, fixed_protein_path):
+    """Uses PDBFixer to rebuild missing heavy atoms in the protein structure."""
+    import logging
+    from pathlib import Path
+    
+    if Path(fixed_protein_path).exists():
+        logging.debug(f"Skipping PDBFixer: {fixed_protein_path} already exists.")
+        return True
+        
+    try:
+        from pdbfixer import PDBFixer
+        from openmm.app import PDBFile
+    except ImportError:
+        logging.error("PDBFixer/OpenMM is required to rebuild missing atoms but is not installed.")
+        return False
+
+    try:
+        logging.info(f"Running PDBFixer on {protein_path} to rebuild missing atoms...")
+        fixer = PDBFixer(filename=str(protein_path))
+        
+        # Find missing residues and atoms, then add them
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        
+        # Save the repaired structure
+        with open(fixed_protein_path, 'w') as f:
+            PDBFile.writeFile(fixer.topology, fixer.positions, f)
+            
+        logging.debug(f"Saved fixed structure to {fixed_protein_path}")
+        return True
+    except Exception as e:
+        logging.error(f"PDBFixer failed for {protein_path}: {e}")
+        return False
+
 def run_reduce2(protein_path, protein_protonated):
     """Runs mmtbx.reduce2 to add hydrogens and optimize the structure."""
     import subprocess
@@ -363,19 +398,27 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, is_af3=Fa
         protein_dir = protein_path.parent
         protein_base = protein_path.stem
 
+        # Define a new path for the fixed PDB
+        protein_fixed = protein_dir / f"{protein_base}_fixed.pdb" 
         protein_protonated = protein_dir / f"{protein_base}FH.pdb"
         protein_prep_out = protein_dir / protein_base
         protein_pdbqt = protein_dir / f"{protein_base}.pdbqt"
 
         logging.debug(f"Preparing receptor {cleaned_pdb_path}...")
 
+        # 0. Rebuild Missing Heavy Atoms (PDBFixer)
+        if not run_pdbfixer(protein_path, protein_fixed):
+            logging.error(f"Failed to fix missing atoms for {protein_base}. Skipping.")
+            continue
+
         # 1. Adding Hydrogens & Optimizing (REDUCE2)
-        if not run_reduce2(protein_path, protein_protonated):
+        # Note: We now pass 'protein_fixed' instead of 'protein_path'
+        if not run_reduce2(protein_fixed, protein_protonated):
             logging.error(f"Failed to protonate {protein_base}. Skipping.")
             continue
             
         # 1.5 Minimize AlphaFold3 Structures with OpenMM
-        if is_af3 and not skip_minimization:
+        if not skip_minimization:
             if not run_openmm_minimization(protein_protonated):
                 logging.error(f"Failed to minimize {protein_base}. Skipping.")
                 continue
