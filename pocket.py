@@ -449,10 +449,10 @@ def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, clus
         
     logging.debug(f"Wrote Vina box configuration to {box_file}")
 
-def generate_pymol_box_script(protein_file, box_params, output_dir="output", cluster_idx=None):
+def generate_pymol_box_script(protein_file, box_params, output_dir="output", cluster_idx=None, pdb_to_load=None):
     """
-    Generates a PyMOL script (.pml) to visualize the generated heatmap 
-    PDB alongside the calculated Vina binding box.
+    Generates a PyMOL script (.pml) to visualize the protein structure 
+    alongside the calculated Vina binding box.
     """
     import os
     from pathlib import Path
@@ -462,7 +462,9 @@ def generate_pymol_box_script(protein_file, box_params, output_dir="output", clu
     suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
     protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
     pml_file = out_path / f"{protein_base}{suffix}_visualize.pml"
-    heatmap_file = f"{protein_base}_heatmap.pdb"
+    
+    if pdb_to_load is None:
+        pdb_to_load = f"{protein_base}_heatmap.pdb"
     
     # Calculate box corners based on center and size
     min_x = box_params['center_x'] - (box_params['size_x'] / 2)
@@ -473,14 +475,19 @@ def generate_pymol_box_script(protein_file, box_params, output_dir="output", clu
     max_z = box_params['center_z'] + (box_params['size_z'] / 2)
 
     script_content = f"""
-# Load the heatmap structure
-load {heatmap_file}
+# Load the structure
+load {pdb_to_load}
 hide all
 show cartoon
+"""
 
+    if str(pdb_to_load).endswith("_heatmap.pdb"):
+        script_content += """
 # Color the protein based on the mapped occurrence scores stored in B-factor
 spectrum b, white_red, minimum=0, maximum=100
+"""
 
+    script_content += f"""
 # Script to draw the 3D Vina box using CGO
 python
 from pymol.cgo import *

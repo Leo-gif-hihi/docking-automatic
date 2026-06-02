@@ -89,11 +89,12 @@ def run_prank_predict(ds_file_path, output_dir):
         logging.error("Command 'prank' not found. Please ensure p2rank is installed and the 'prank' command is in your PATH.")
         return False
 
-def create_box_from_predictions(p2rank_out_dir, proteins, box_dir, size=30.0):
+def create_box_from_predictions(p2rank_out_dir, proteins, box_dir, prepared_dir, size=30.0):
     """
     Extracts the center coordinates of the top 1 pocket from p2rank predictions
     and creates a Vina box configuration file.
     """
+    from pocket import generate_pymol_box_script
     box_path = Path(box_dir)
     box_path.mkdir(exist_ok=True, parents=True)
     p2rank_path = Path(p2rank_out_dir)
@@ -128,6 +129,21 @@ def create_box_from_predictions(p2rank_out_dir, proteins, box_dir, size=30.0):
                             bf.write(f"exhaustiveness = 32\n") # Default for size=30^3
                         
                         logging.info(f"Created box file for {protein} at {box_filename}")
+                        
+                        box_params = {
+                            'center_x': center_x, 'center_y': center_y, 'center_z': center_z,
+                            'size_x': size, 'size_y': size, 'size_z': size
+                        }
+                        prepared_path = Path(prepared_dir)
+                        protein_file_path = prepared_path / protein
+                        
+                        generate_pymol_box_script(
+                            protein_file=Path(protein), 
+                            box_params=box_params, 
+                            output_dir=box_dir, 
+                            cluster_idx="p2rank",
+                            pdb_to_load=protein_file_path.absolute()
+                        )
                         break # Only process the top rank
         except Exception as e:
             logging.error(f"Failed to extract predictions for {protein}: {e}")
@@ -171,7 +187,7 @@ def process_unprocessed_with_p2rank(unprocessed_file, prepared_dir, box_dir):
     
     # 4. Extract predictions and create box files
     if success:
-        create_box_from_predictions(output_dir, proteins, box_dir)
+        create_box_from_predictions(output_dir, proteins, box_dir, prepared_dir)
 
 
 if __name__ == "__main__":
