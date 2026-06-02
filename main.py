@@ -67,7 +67,7 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path):
         return
 
     for protein_base in prepared_proteins:
-        box_files = list(box_path.glob(f"{protein_base}.box.txt")) + list(box_path.glob(f"{protein_base}_cluster*.box.txt"))
+        box_files = list(box_path.glob(f"{protein_base}.box.txt")) + list(box_path.glob(f"{protein_base}_pocket_*.box.txt"))
         if not box_files:
             logging.warning(f"No box files found for {protein_base} in {box_path}")
             continue
@@ -204,6 +204,19 @@ def main():
             logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
         unprocessed_list = process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
         
+        if args.dock_all_pockets:
+            print(f"\n\033[1;36m[INTERACTIVE] Pocket identification complete. Check {vis_dir}/pocket_reliability.csv.\033[0m")
+            eliminated = input("Enter pocket IDs to eliminate separated by commas (e.g. 1, 3, 5), or press Enter to keep all: ").strip()
+            if eliminated:
+                eliminated_ids = [pid.strip() for pid in eliminated.split(',') if pid.strip()]
+                for pid in eliminated_ids:
+                    for box_file in box_path.glob(f"*_pocket_{pid}.box.txt"):
+                        logging.info(f"Eliminating pocket: {box_file.name}")
+                        try:
+                            box_file.unlink()
+                        except FileNotFoundError:
+                            pass
+
         # Backup pocket identification using p2rank
         if unprocessed_list and os.path.exists(unprocessed_list):
             logging.info("\n\033[1;33m[WORKFLOW] Running p2rank as a backup for unprocessed proteins...\033[0m")
@@ -275,7 +288,7 @@ def main():
     # Rank complexes after all docking jobs are complete
     step_start = time.time()
     logging.info("\n\033[1;32m[WORKFLOW] Docking complete. Generating ranking...\033[0m")
-    results = rank_complexes(args.output_dir)
+    results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
     print_ranking(results, Path(args.output_dir) / "ranking.csv")
     logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
 

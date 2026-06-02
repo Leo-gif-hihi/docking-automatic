@@ -428,13 +428,12 @@ def calculate_volume_and_exhaustiveness(box_params):
     exhaustiveness = 32 if volume <= 27000 else 64
     return volume, exhaustiveness
 
-def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, cluster_idx=None):
+def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, suffix=""):
     """
     Writes the Vina configuration box file.
     """
     import os
     os.makedirs(box_path, exist_ok=True)
-    suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
     protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
     box_file = box_path / f"{protein_base}{suffix}.box.txt"
     
@@ -449,7 +448,7 @@ def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, clus
         
     logging.debug(f"Wrote Vina box configuration to {box_file}")
 
-def generate_pymol_box_script(protein_file, box_params, output_dir="output", cluster_idx=None, pdb_to_load=None):
+def generate_pymol_box_script(protein_file, box_params, output_dir="output", suffix="", pdb_to_load=None):
     """
     Generates a PyMOL script (.pml) to visualize the protein structure 
     alongside the calculated Vina binding box.
@@ -459,7 +458,6 @@ def generate_pymol_box_script(protein_file, box_params, output_dir="output", clu
     out_path = Path(output_dir)
     out_path.mkdir(exist_ok=True, parents=True)
     
-    suffix = f"_cluster{cluster_idx}" if cluster_idx is not None else ""
     protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
     pml_file = out_path / f"{protein_base}{suffix}_visualize.pml"
     
@@ -580,7 +578,9 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     out_path.mkdir(exist_ok=True, parents=True)
     reliability_file = out_path / "pocket_reliability.csv"
     with open(reliability_file, 'w', encoding='utf-8') as f:
-        f.write("protein_name,pocket_score,ligands\n")
+        f.write("protein_name,pocket_id,pocket_score,ligands\n")
+
+    global_pocket_counter = 1
 
     protein_files = list(protein_path.glob("*FH.pdb"))
     if not protein_files:
@@ -701,7 +701,9 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                         ligands_str = ";".join(sorted(cluster_ligands))
                         
                         disp_protein_name = protein_file.name if idx == 0 else ""
-                        rf.write(f"{disp_protein_name},{best_score},{ligands_str}\n")
+                        pocket_id = global_pocket_counter
+                        global_pocket_counter += 1
+                        rf.write(f"{disp_protein_name},{pocket_id},{best_score},{ligands_str}\n")
 
                         logging.debug(f"Cluster {idx+1} Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
                         
@@ -714,9 +716,9 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                         logging.debug(f"Box Volume {idx+1}: {volume:.2f} Å³ -> Scaled Exhaustiveness: {exhaustiveness}")
                         
                         if dock_all_pockets or idx == 0:
-                            cluster_idx_to_use = idx + 1 if dock_all_pockets else None
-                            write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, cluster_idx=cluster_idx_to_use)
-                        generate_pymol_box_script(protein_file, box_params, output_dir=output_dir, cluster_idx=idx+1)
+                            suffix = f"_pocket_{pocket_id}"
+                            write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, suffix=suffix)
+                        generate_pymol_box_script(protein_file, box_params, output_dir=output_dir, suffix=f"_pocket_{pocket_id}")
                 
             else:
                 logging.warning("Could not resolve any binding pockets via clustering.")
