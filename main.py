@@ -192,7 +192,7 @@ def main():
         logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
         if args.identify_pockets_only and args.skip_autopoc:
             logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
-        unprocessed_list = process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
+        unprocessed_list = process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets, original_protein_dir=str(protein_path))
         
         if args.dock_all_pockets:
             print(f"\n\033[1;36m[INTERACTIVE] Pocket identification complete. Check {vis_dir}/pocket_reliability.csv.\033[0m")
@@ -216,7 +216,7 @@ def main():
                     with open(unprocessed_list, "r", encoding="utf-8") as f:
                         existing_unprocessed = set(line.strip() for line in f if line.strip())
 
-                for protein_file in protein_clean_path.glob("*FH.pdb"):
+                for protein_file in protein_clean_path.glob("*FH.cif"):
                     protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
                     remaining_boxes = list(box_path.glob(f"{protein_base}*.box.txt"))
                     if not remaining_boxes and protein_file.name not in existing_unprocessed:

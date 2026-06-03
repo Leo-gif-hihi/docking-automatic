@@ -3,7 +3,7 @@ import glob
 import argparse
 import sys
 import logging
-from prody import parseMMCIF, writePDB, confProDy
+from prody import parseMMCIF, writeMMCIF, confProDy
 
 # Turn off ProDy's progress text to keep your terminal clean
 confProDy(verbosity='none')
@@ -43,12 +43,12 @@ def prompt_elimination(hetatms_set):
 
 def clean_and_save_pdb(structure, original_filepath, output_dir, sel_str):
     """Applies the selection string to clean the structure and saves it to the output directory."""
-    filename = os.path.basename(original_filepath).replace('.cif', '.pdb')
+    filename = os.path.basename(original_filepath)
     clean_selection = structure.select(sel_str)
     out_filepath = os.path.join(output_dir, filename)
     
     if clean_selection:
-            writePDB(out_filepath, clean_selection)
+            writeMMCIF(out_filepath, clean_selection)
             logging.debug(f" -> Saved: {out_filepath}")
             return out_filepath
     else:
@@ -214,7 +214,7 @@ def run_pdbfixer(protein_path, fixed_protein_path):
         
     try:
         from pdbfixer import PDBFixer
-        from openmm.app import PDBFile
+        from openmm.app import PDBxFile
     except ImportError:
         logging.error("PDBFixer/OpenMM is required to rebuild missing atoms but is not installed.")
         return False
@@ -230,7 +230,7 @@ def run_pdbfixer(protein_path, fixed_protein_path):
         
         # Save the repaired structure
         with open(fixed_protein_path, 'w') as f:
-            PDBFile.writeFile(fixer.topology, fixer.positions, f)
+            PDBxFile.writeFile(fixer.topology, fixer.positions, f)
             
         logging.debug(f"Saved fixed structure to {fixed_protein_path}")
         return True
@@ -262,7 +262,7 @@ def run_reduce2(protein_path, protein_protonated):
 def run_openmm_minimization(protein_protonated, freeze_backbone=True):
     """Minimizes the structure using OpenMM, optionally freezing the backbone."""
     try:
-        from openmm.app import PDBFile, ForceField, Simulation, HBonds, NoCutoff
+        from openmm.app import PDBxFile, ForceField, Simulation, HBonds, NoCutoff
         from openmm import LangevinMiddleIntegrator
         from openmm.unit import kelvin, picosecond, kilojoules_per_mole, nanometer
     except ImportError:
@@ -271,7 +271,7 @@ def run_openmm_minimization(protein_protonated, freeze_backbone=True):
 
     try:
         logging.info(f"Running OpenMM minimization on {protein_protonated}")
-        pdb = PDBFile(str(protein_protonated))
+        pdb = PDBxFile(str(protein_protonated))
         
         forcefield = ForceField('amber14-all.xml', 'amber14/tip3p.xml', 'implicit/gbn2.xml')
         system = forcefield.createSystem(pdb.topology, nonbondedMethod=NoCutoff, constraints=None)
@@ -295,13 +295,25 @@ def run_openmm_minimization(protein_protonated, freeze_backbone=True):
         
         # Overwrite the protein_protonated file with the minimized structure
         with open(protein_protonated, 'w') as f:
-            PDBFile.writeFile(simulation.topology, positions, f)
+            PDBxFile.writeFile(simulation.topology, positions, f)
             
         logging.debug(f"Saved minimized structure to {protein_protonated}")
         return True
     except Exception as e:
         logging.error(f"OpenMM minimization failed: {e}")
         return False
+
+def fix_cif_indentation(cif_path):
+    """ProDy (used by Meeko) fails to parse mmCIF files if ATOM/HETATM lines have leading spaces.
+       This function strips leading spaces from these lines."""
+    with open(cif_path, 'r') as f:
+        lines = f.readlines()
+    with open(cif_path, 'w') as f:
+        for line in lines:
+            if line.lstrip().startswith('ATOM') or line.lstrip().startswith('HETATM'):
+                f.write(line.lstrip())
+            else:
+                f.write(line)
 
 def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
     """Runs mk_prepare_receptor.py (Meeko) to prepare the receptor."""
@@ -311,6 +323,8 @@ def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
     if Path(protein_pdbqt).exists():
         logging.debug(f"Skipping Meeko: {protein_pdbqt} already exists.")
         return True
+        
+    fix_cif_indentation(protein_protonated)
 
     cmd_meeko = [
         "mk_prepare_receptor.py", "-i", str(protein_protonated), 
@@ -335,12 +349,12 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
         logging.error(f"No CIF files found in '{input_dir}'. Please check your folder.")
         return {}
     
-# Partition files: check if they already exist in the output directory
+    # Partition files: check if they already exist in the output directory
     files_to_clean = []
     already_cleaned_paths = []
     
     for filepath in pdb_files:
-        filename = os.path.basename(filepath).replace('.cif', '.pdb')
+        filename = os.path.basename(filepath)
         expected_out_path = os.path.join(output_dir, filename)
         
         if os.path.exists(expected_out_path):
@@ -408,9 +422,9 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
         protein_dir = protein_path.parent
         protein_base = protein_path.stem
 
-        # Define a new path for the fixed PDB
-        protein_fixed = protein_dir / f"{protein_base}_fixed.pdb" 
-        protein_protonated = protein_dir / f"{protein_base}FH.pdb"
+        # Define a new path for the fixed CIF
+        protein_fixed = protein_dir / f"{protein_base}_fixed.cif" 
+        protein_protonated = protein_dir / f"{protein_base}FH.cif"
         protein_prep_out = protein_dir / protein_base
         protein_pdbqt = protein_dir / f"{protein_base}.pdbqt"
 
@@ -433,7 +447,7 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
     phase15_results = []
     if skip_minimization and phase1_results:
         print("\n\033[1;33m[INTERACTIVE] --skip_minimization is provided.\033[0m")
-        print("\033[1;33mThe pipeline has stopped to allow manual minimization of the generated FH files (*FH.pdb).\033[0m")
+        print("\033[1;33mThe pipeline has stopped to allow manual minimization of the generated FH files (*FH.cif).\033[0m")
         while True:
             ans = input("Have you manually minimized the FH files in the cloud server and replaced the local files? (y/n): ").strip().lower()
             if ans == 'y':
@@ -450,31 +464,10 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
                 continue
             phase15_results.append(item)
 
-    # Phase 2: DBREF and Meeko
+    # Phase 2: Meeko
     for item in phase15_results:
         protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
         
-        # Inject DBREF lines into the protonated PDB file
-        from pocket import extract_uniprot_ids_from_cif
-        original_cif = Path(input_dir) / f"{protein_base}.cif"
-            
-        if original_cif.exists() and protein_protonated.exists():
-            chain_to_uniprot = extract_uniprot_ids_from_cif(str(original_cif))
-            if chain_to_uniprot:
-                dbref_lines = []
-                for chain, unp_id in chain_to_uniprot.items():
-                    # Format: DBREF  XXXX C    1  9999  UNP    P12345   P12345           1  9999
-                    dbref_line = f"DBREF  XXXX {chain:<1}    1  9999  UNP    {unp_id:<8} {unp_id:<8}       1  9999\n"
-                    dbref_lines.append(dbref_line)
-                
-                # Check if already injected
-                with open(protein_protonated, 'r') as f:
-                    content = f.read()
-                if not content.startswith("DBREF"):
-                    with open(protein_protonated, 'w') as f:
-                        f.write("".join(dbref_lines))
-                        f.write(content)
-
         # 2. Preparing Receptor (Meeko)
         if run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
             prepared_results[protein_base] = protein_pdbqt

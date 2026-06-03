@@ -1,7 +1,7 @@
 import time
 import os
 import logging
-from Bio.PDB import PDBParser, PDBIO, MMCIFParser
+from Bio.PDB import PDBParser, PDBIO, MMCIFParser, MMCIFIO
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from Bio.PDB.Polypeptide import protein_letters_3to1
 from Bio import Align
@@ -301,7 +301,7 @@ def extract_active_coordinates(cif_file, active_residues):
     Extracts 3D coordinates (x,y,z) for the Alpha-Carbon of high-scoring residues.
     Returns coords (Nx3 NumPy array), scores (Nx1 NumPy array), and corresponding residue mappings.
     """
-    parser = PDBParser(QUIET=True)
+    parser = MMCIFParser(QUIET=True)
     structure = parser.get_structure("protein", cif_file)
     coords = []
     scores = []
@@ -462,7 +462,7 @@ def generate_pymol_box_script(protein_file, box_params, output_dir="output", suf
     pml_file = out_path / f"{protein_base}{suffix}_visualize.pml"
     
     if pdb_to_load is None:
-        pdb_to_load = f"{protein_base}_heatmap.pdb"
+        pdb_to_load = f"{protein_base}_heatmap.cif"
     
     # Calculate box corners based on center and size
     min_x = box_params['center_x'] - (box_params['size_x'] / 2)
@@ -479,7 +479,7 @@ hide all
 show cartoon
 """
 
-    if str(pdb_to_load).endswith("_heatmap.pdb"):
+    if str(pdb_to_load).endswith("_heatmap.cif"):
         script_content += """
 # Color the protein based on the mapped occurrence scores stored in B-factor
 spectrum b, white_red, minimum=0, maximum=100
@@ -537,14 +537,14 @@ zoom docking_box, 15
         f.write(script_content.strip())
     logging.debug(f"Generated PyMOL Visualization Script: {pml_file}")
 
-def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
+def generate_heatmap_cif(protein_file, active_residues, output_dir="output"):
     """
-    Step 12: Writes BioLiP occurrence scores into the PDB B-factor column.
+    Step 12: Writes BioLiP occurrence scores into the B-factor column.
     Allows users to visually verify the pipeline's decisions in 3D (e.g., in PyMOL).
     """
     import os
     from pathlib import Path
-    parser = PDBParser(QUIET=True)
+    parser = MMCIFParser(QUIET=True)
     structure = parser.get_structure("protein", protein_file)
     
     max_score = max(active_residues.values()) if active_residues else 0
@@ -564,14 +564,14 @@ def generate_heatmap_pdb(protein_file, active_residues, output_dir="output"):
     out_path = Path(output_dir)
     out_path.mkdir(exist_ok=True, parents=True)
     
-    io = PDBIO()
+    io = MMCIFIO()
     io.set_structure(structure)
     protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
-    heatmap_file = out_path / f"{protein_base}_heatmap.pdb"
+    heatmap_file = out_path / f"{protein_base}_heatmap.cif"
     io.save(str(heatmap_file))
-    logging.debug(f"Generated Heatmap PDB for visual verification: {heatmap_file}")
+    logging.debug(f"Generated Heatmap CIF for visual verification: {heatmap_file}")
 
-def process_pockets(protein_path, box_path, output_dir="output", dock_all_pockets=False):
+def process_pockets(protein_path, box_path, output_dir="output", dock_all_pockets=False, original_protein_dir=None):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
     from pathlib import Path
     out_path = Path(output_dir)
@@ -582,9 +582,9 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
 
     global_pocket_counter = 1
 
-    protein_files = list(protein_path.glob("*FH.pdb"))
+    protein_files = list(protein_path.glob("*FH.cif"))
     if not protein_files:
-        logging.error(f"No *FH.pdb files found in {protein_path} for pocket identification.")
+        logging.error(f"No *FH.cif files found in {protein_path} for pocket identification.")
         return
 
     unprocessed_proteins = []
@@ -592,7 +592,12 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     for i, protein_file in enumerate(protein_files, 1):
         logging.info(f"Completed {i}/{total_proteins} proteins")
         logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
-        chain_to_uniprot = extract_uniprot_ids_from_pdb(protein_file)
+        if original_protein_dir:
+            protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
+            original_cif = Path(original_protein_dir) / f"{protein_base}.cif"
+            chain_to_uniprot = extract_uniprot_ids_from_cif(str(original_cif))
+        else:
+            chain_to_uniprot = extract_uniprot_ids_from_cif(str(protein_file))
         
         if not chain_to_uniprot:
             logging.warning(f"No UniProt mappings found in DBREF records for {protein_file.name}.")
@@ -602,7 +607,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         logging.debug(f"Extracted UniProt mappings: {chain_to_uniprot}")
         
         # Extract sequences physically present in the ATOM records to avoid missing loops
-        chain_sequences = extract_sequence_from_pdb_atoms(protein_file)
+        chain_sequences = extract_sequence_from_cif_atoms(str(protein_file))
         logging.debug(f"Extracted physical sequences for chains: {list(chain_sequences.keys())}")
         
         # Step 7: Initialize occurrence heatmap for all physical residues
@@ -669,9 +674,9 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         active_residues = {k: count for k, count in occurrence_heatmap.items() if count > 0}
         logging.debug(f"Aggregated {len(active_residues)} active residues across all chains for {protein_file.name}")
         
-        # Step 12: Generate Heatmap PDB
+        # Step 12: Generate Heatmap CIF
         if active_residues:
-            generate_heatmap_pdb(protein_file, active_residues, output_dir=output_dir)
+            generate_heatmap_cif(protein_file, active_residues, output_dir=output_dir)
         
         # Step 8: 3D Spatial Clustering (DBSCAN)
         if active_residues:

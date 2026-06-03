@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 def get_protein_base(protein):
-    if protein.endswith('FH.pdb'):
+    if protein.endswith('FH.pdb') or protein.endswith('FH.cif'):
         return protein[:-6]
     elif protein.endswith('.pdb') or protein.endswith('.cif'):
         return protein[:-4]
