@@ -238,7 +238,7 @@ def main():
         # Backup pocket identification using p2rank
         if unprocessed_list and os.path.exists(unprocessed_list):
             logging.info("\n\033[1;33m[WORKFLOW] Running p2rank as a backup for unprocessed proteins...\033[0m")
-            process_unprocessed_with_p2rank(str(unprocessed_list), str(protein_clean_path), str(box_path))
+            process_unprocessed_with_p2rank(str(unprocessed_list), str(protein_clean_path), str(box_path), vis_dir=str(vis_dir))
             
         logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
         if args.identify_pockets_only:
