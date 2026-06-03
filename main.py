@@ -217,6 +217,24 @@ def main():
                         except FileNotFoundError:
                             pass
 
+                # Fallback to p2rank for proteins that have no pockets left
+                if unprocessed_list is None:
+                    unprocessed_list = str(protein_path / "unprocessed_proteins.txt")
+                
+                existing_unprocessed = set()
+                if os.path.exists(unprocessed_list):
+                    with open(unprocessed_list, "r", encoding="utf-8") as f:
+                        existing_unprocessed = set(line.strip() for line in f if line.strip())
+
+                for protein_file in protein_clean_path.glob("*FH.pdb"):
+                    protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
+                    remaining_boxes = list(box_path.glob(f"{protein_base}*.box.txt"))
+                    if not remaining_boxes and protein_file.name not in existing_unprocessed:
+                        with open(unprocessed_list, "a", encoding="utf-8") as f:
+                            f.write(f"{protein_file.name}\n")
+                        existing_unprocessed.add(protein_file.name)
+                        logging.info(f"Protein {protein_base} has no pockets left after elimination. Added to unprocessed list for p2rank fallback.")
+
         # Backup pocket identification using p2rank
         if unprocessed_list and os.path.exists(unprocessed_list):
             logging.info("\n\033[1;33m[WORKFLOW] Running p2rank as a backup for unprocessed proteins...\033[0m")
