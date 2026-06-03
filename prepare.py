@@ -259,23 +259,31 @@ def run_reduce2(protein_path, protein_protonated):
         return False
 
 
-def run_openmm_minimization(protein_protonated):
-    """Minimizes the structure using OpenMM (unconstrained)."""
+def run_openmm_minimization(protein_protonated, freeze_backbone=True):
+    """Minimizes the structure using OpenMM, optionally freezing the backbone."""
     try:
         from openmm.app import PDBFile, ForceField, Simulation, HBonds, NoCutoff
         from openmm import LangevinMiddleIntegrator
         from openmm.unit import kelvin, picosecond, kilojoules_per_mole, nanometer
     except ImportError:
-        logging.error("OpenMM is required to minimize AlphaFold3 structures but is not installed.")
+        logging.error("OpenMM is required to minimize structures but is not installed.")
         return False
 
     try:
-        logging.info(f"Running OpenMM unconstrained minimization on {protein_protonated}")
+        logging.info(f"Running OpenMM minimization on {protein_protonated}")
         pdb = PDBFile(str(protein_protonated))
         
-        forcefield = ForceField('amber14-all.xml', 'implicit/gbn2.xml')
-        system = forcefield.createSystem(pdb.topology, nonbondedMethod=NoCutoff, constraints=HBonds)
+        forcefield = ForceField('amber14-all.xml', 'amber14/tip3p.xml', 'implicit/gbn2.xml')
+        system = forcefield.createSystem(pdb.topology, nonbondedMethod=NoCutoff, constraints=None)
         
+        # --- NEW: Freeze the backbone to preserve the crystal structure ---
+        if freeze_backbone:
+            logging.debug("Freezing backbone atoms (N, CA, C, O) to prevent structural drift...")
+            for atom in pdb.topology.atoms():
+                if atom.name in ['N', 'CA', 'C', 'O']: # Identify backbone atoms
+                    system.setParticleMass(atom.index, 0.0) # Mass of 0 freezes the atom
+        # -----------------------------------------------------------------
+
         integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.004*picosecond)
         simulation = Simulation(pdb.topology, system, integrator)
         simulation.context.setPositions(pdb.positions)
@@ -393,6 +401,8 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, is_af3=Fa
     from pathlib import Path
     prepared_results = {}
     
+    # Phase 1: Rebuild and REDUCE2
+    phase1_results = []
     for cleaned_pdb_path in all_cleaned_paths:
         protein_path = Path(cleaned_pdb_path)
         protein_dir = protein_path.parent
@@ -417,12 +427,33 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, is_af3=Fa
             logging.error(f"Failed to protonate {protein_base}. Skipping.")
             continue
             
-        # 1.5 Minimize AlphaFold3 Structures with OpenMM
-        if not skip_minimization:
+        phase1_results.append((protein_base, protein_protonated, protein_prep_out, protein_pdbqt))
+
+    # Phase 1.5: Minimization and User Prompt
+    phase15_results = []
+    if skip_minimization and phase1_results:
+        print("\n\033[1;33m[INTERACTIVE] --skip_minimization is provided.\033[0m")
+        print("\033[1;33mThe pipeline has stopped to allow manual minimization of the generated FH files (*FH.pdb).\033[0m")
+        while True:
+            ans = input("Have you manually minimized the FH files in the cloud server and replaced the local files? (y/n): ").strip().lower()
+            if ans == 'y':
+                print("\033[1;32mContinuing processing...\033[0m")
+                phase15_results = phase1_results
+                break
+            else:
+                print("\033[1;33mPlease minimize the FH files and replace them in the folder before continuing.\033[0m")
+    else:
+        for item in phase1_results:
+            protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
             if not run_openmm_minimization(protein_protonated):
                 logging.error(f"Failed to minimize {protein_base}. Skipping.")
                 continue
+            phase15_results.append(item)
 
+    # Phase 2: DBREF and Meeko
+    for item in phase15_results:
+        protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
+        
         # Inject DBREF lines into the protonated PDB file
         from pocket import extract_uniprot_ids_from_cif
         original_cif = Path(input_dir) / f"{protein_base}.cif"

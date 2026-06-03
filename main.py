@@ -172,7 +172,7 @@ def main():
     prepared_proteins = {}
     step_start = time.time()
     logging.info("\n\033[1;32m[WORKFLOW] Preparing proteins...\033[0m")
-    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor)
+    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization)
     
     af3_path = Path(args.af3_dir)
     if af3_path.exists():
