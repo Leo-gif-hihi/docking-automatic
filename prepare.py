@@ -276,7 +276,7 @@ def run_openmm_minimization(protein_protonated, freeze_backbone=True):
         forcefield = ForceField('amber14-all.xml', 'amber14/tip3p.xml', 'implicit/gbn2.xml')
         system = forcefield.createSystem(pdb.topology, nonbondedMethod=NoCutoff, constraints=None)
         
-        # --- NEW: Freeze the backbone to preserve the crystal structure ---
+        # --- Freeze the backbone to preserve the crystal structure ---
         if freeze_backbone:
             logging.debug("Freezing backbone atoms (N, CA, C, O) to prevent structural drift...")
             for atom in pdb.topology.atoms():
@@ -323,7 +323,7 @@ def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
         logging.error(f"Meeko failed to prepare {protein_protonated}:\n{e.stderr}")
         return False
 
-def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, is_af3=False, skip_minimization=False):
+def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
