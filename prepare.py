@@ -659,6 +659,24 @@ def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_pat
         f.writelines(final_lines)
 
 
+def create_fh_zip_archive(phase1_results, output_dir):
+    """Creates a zip archive of the generated FH files for easy cloud upload."""
+    import zipfile
+    import os
+    import logging
+    
+    zip_path = os.path.join(output_dir, "fh_files.zip")
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for item in phase1_results:
+                _, protein_protonated, _, _ = item
+                if os.path.exists(protein_protonated):
+                    zipf.write(protein_protonated, os.path.basename(str(protein_protonated)))
+        logging.info(f"\033[1;32mCreated archive {zip_path} containing FH files for easy cloud upload.\033[0m")
+    except Exception as e:
+        logging.error(f"Failed to create {zip_path}: {e}")
+
+
 def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
@@ -768,16 +786,19 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
     # Phase 1.5: Minimization and User Prompt
     phase15_results = []
     if skip_minimization and phase1_results:
-        print("\n\033[1;33m[INTERACTIVE] --skip_minimization is provided.\033[0m")
-        print("\033[1;33mThe pipeline has stopped to allow manual minimization of the generated FH files (*FH.cif).\033[0m")
+        logging.info("\n\033[1;33m[INTERACTIVE] --skip_minimization is provided.\033[0m")
+        logging.info("\033[1;33mThe pipeline has stopped to allow manual minimization of the generated FH files (*FH.cif).\033[0m")
+        
+        create_fh_zip_archive(phase1_results, output_dir)
+
         while True:
             ans = input("Have you manually minimized the FH files in the cloud server and replaced the local files? (y/n): ").strip().lower()
             if ans == 'y':
-                print("\033[1;32mContinuing processing...\033[0m")
+                logging.info("\033[1;32mContinuing processing...\033[0m")
                 phase15_results = phase1_results
                 break
             else:
-                print("\033[1;33mPlease minimize the FH files and replace them in the folder before continuing.\033[0m")
+                logging.warning("\033[1;33mPlease minimize the FH files and replace them in the folder before continuing.\033[0m")
     else:
         for item in phase1_results:
             protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
