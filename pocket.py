@@ -571,7 +571,7 @@ def generate_heatmap_cif(protein_file, active_residues, output_dir="output"):
     io.save(str(heatmap_file))
     logging.debug(f"Generated Heatmap CIF for visual verification: {heatmap_file}")
 
-def process_pockets(protein_path, box_path, output_dir="output", dock_all_pockets=False, original_protein_dir=None):
+def process_pockets(protein_path, box_path, output_dir="output", dock_all_pockets=False):
     """Phase 1: Identify pockets by querying BioLiP data for UniProt IDs extracted from PDB."""
     from pathlib import Path
     out_path = Path(output_dir)
@@ -592,12 +592,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     for i, protein_file in enumerate(protein_files, 1):
         logging.info(f"Completed {i}/{total_proteins} proteins")
         logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
-        if original_protein_dir:
-            protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
-            original_cif = Path(original_protein_dir) / f"{protein_base}.cif"
-            chain_to_uniprot = extract_uniprot_ids_from_cif(str(original_cif))
-        else:
-            chain_to_uniprot = extract_uniprot_ids_from_cif(str(protein_file))
+        chain_to_uniprot = extract_uniprot_ids_from_cif(str(protein_file))
         
         if not chain_to_uniprot:
             logging.warning(f"No UniProt mappings found in DBREF records for {protein_file.name}.")

@@ -192,7 +192,7 @@ def main():
         logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
         if args.identify_pockets_only and args.skip_autopoc:
             logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
-        unprocessed_list = process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets, original_protein_dir=str(protein_path))
+        unprocessed_list = process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
         
         if args.dock_all_pockets:
             print(f"\n\033[1;36m[INTERACTIVE] Pocket identification complete. Check {vis_dir}/pocket_reliability.csv.\033[0m")

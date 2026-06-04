@@ -341,10 +341,20 @@ def _extract_cif_loop(lines, loop_prefix):
     """Extracts a loop block from CIF lines based on a prefix (e.g., '_entity.')."""
     loop_lines = []
     in_loop = False
+    in_kv = False
+    in_multiline = False
     
     for i, line in enumerate(lines):
         stripped = line.strip()
+        
+        if in_multiline:
+            loop_lines.append(line.rstrip() + '\n')
+            if line.startswith(';'):
+                in_multiline = False
+            continue
+            
         if stripped == "loop_":
+            in_kv = False
             j = i + 1
             is_target = False
             while j < len(lines) and lines[j].strip().startswith("_"):
@@ -361,11 +371,21 @@ def _extract_cif_loop(lines, loop_prefix):
         if in_loop:
             if stripped == "loop_" or (stripped.startswith("_") and not stripped.startswith(loop_prefix)):
                 break
+            if line.startswith(';'):
+                in_multiline = True
             if stripped != "#":
                 loop_lines.append(line.rstrip() + '\n')
         else:
             if stripped.startswith(loop_prefix):
+                in_kv = True
                 loop_lines.append(line.rstrip() + '\n')
+            elif in_kv:
+                if stripped.startswith("_") or stripped == "loop_" or (stripped == "#" and not line.startswith(";")):
+                    in_kv = False
+                else:
+                    if line.startswith(';'):
+                        in_multiline = True
+                    loop_lines.append(line.rstrip() + '\n')
                 
     return loop_lines
 
@@ -509,6 +529,12 @@ def _get_asym_mappings_from_atom_site(lines, col_names, start_idx, end_idx):
     except ValueError:
         return mapping
         
+    comp_idx = col_names.index("_atom_site.label_comp_id") if "_atom_site.label_comp_id" in col_names else -1
+    
+    # Standard amino acids to ensure we're looking at a protein chain
+    protein_res = {"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", 
+                   "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"}
+        
     data_start = start_idx + 1 + len(col_names)
     for i in range(data_start, end_idx):
         line = lines[i].strip()
@@ -517,9 +543,62 @@ def _get_asym_mappings_from_atom_site(lines, col_names, start_idx, end_idx):
         if len(tokens) > max(label_idx, auth_idx):
             label = tokens[label_idx]
             auth = tokens[auth_idx]
+            
+            # Only map if the residue is a standard protein amino acid
+            if comp_idx != -1 and len(tokens) > comp_idx:
+                comp_id = tokens[comp_idx]
+                if comp_id not in protein_res:
+                    continue
+                    
             if label not in mapping:
                 mapping[label] = auth
     return mapping
+
+def _update_struct_ref_seq_pdbx_strand_id(struct_ref_seq_lines, orig_label_to_auth, prody_label_to_auth):
+    """Updates _struct_ref_seq.pdbx_strand_id to match the final label_asym_id."""
+    if not struct_ref_seq_lines:
+        return
+        
+    orig_auth_to_label = {}
+    for label, auth in orig_label_to_auth.items():
+        if auth not in orig_auth_to_label:
+            orig_auth_to_label[auth] = label
+            
+    prody_auth_to_label = {}
+    for label, auth in prody_label_to_auth.items():
+        if auth not in prody_auth_to_label:
+            prody_auth_to_label[auth] = label
+    
+    col_names = []
+    header_idx = -1
+    for i, line in enumerate(struct_ref_seq_lines):
+        stripped = line.strip()
+        if stripped.startswith("_struct_ref_seq."):
+            col_names.append(stripped)
+        elif not stripped.startswith("_") and stripped != "loop_" and stripped != "#":
+            header_idx = i
+            break
+            
+    if header_idx != -1 and "_struct_ref_seq.pdbx_strand_id" in col_names:
+        target_idx = col_names.index("_struct_ref_seq.pdbx_strand_id")
+        for i in range(header_idx, len(struct_ref_seq_lines)):
+            line = struct_ref_seq_lines[i].strip()
+            if not line or line == "#": continue
+            tokens = line.split()
+            if len(tokens) > target_idx:
+                orig_auth = tokens[target_idx]
+                orig_label = orig_auth_to_label.get(orig_auth, orig_auth)
+                final_label = prody_auth_to_label.get(orig_label, orig_label)
+                tokens[target_idx] = final_label
+                struct_ref_seq_lines[i] = " ".join(tokens) + "\n"
+    else:
+        for i, line in enumerate(struct_ref_seq_lines):
+            tokens = line.strip().split()
+            if len(tokens) >= 2 and tokens[0] == "_struct_ref_seq.pdbx_strand_id":
+                orig_auth = tokens[1]
+                orig_label = orig_auth_to_label.get(orig_auth, orig_auth)
+                final_label = prody_auth_to_label.get(orig_label, orig_label)
+                struct_ref_seq_lines[i] = f"_struct_ref_seq.pdbx_strand_id {final_label}\n"
 
 def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_path):
     """
@@ -537,6 +616,7 @@ def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_pat
     entity_lines = _extract_cif_loop(orig_lines, "_entity.")
     orig_start, orig_end, orig_cols = _get_atom_site_cols(orig_lines)
     orig_asym_to_entity = _get_asym_to_entity_from_atom_site(orig_lines, orig_cols, orig_start, orig_end)
+    orig_label_to_auth = _get_asym_mappings_from_atom_site(orig_lines, orig_cols, orig_start, orig_end)
 
     # 2. Parse ProDy file's _atom_site for label -> auth mapping
     prody_start, prody_end, prody_cols = _get_atom_site_cols(prody_lines)
@@ -565,6 +645,15 @@ def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_pat
         
     if entity_lines:
         final_lines.extend(["\n#\n"] + entity_lines + ["#\n"])
+
+    struct_ref_lines = _extract_cif_loop(orig_lines, "_struct_ref.")
+    if struct_ref_lines:
+        final_lines.extend(["\n#\n"] + struct_ref_lines + ["#\n"])
+        
+    struct_ref_seq_lines = _extract_cif_loop(orig_lines, "_struct_ref_seq.")
+    if struct_ref_seq_lines:
+        _update_struct_ref_seq_pdbx_strand_id(struct_ref_seq_lines, orig_label_to_auth, prody_label_to_auth)
+        final_lines.extend(["\n#\n"] + struct_ref_seq_lines + ["#\n"])
         
     with open(final_cif_path, 'w', encoding='utf-8') as f:
         f.writelines(final_lines)
