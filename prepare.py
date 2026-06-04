@@ -337,6 +337,205 @@ def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
         logging.error(f"Meeko failed to prepare {protein_protonated}:\n{e.stderr}")
         return False
 
+def _extract_cif_loop(lines, loop_prefix):
+    """Extracts a loop block from CIF lines based on a prefix (e.g., '_entity.')."""
+    loop_lines = []
+    in_loop = False
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "loop_":
+            j = i + 1
+            is_target = False
+            while j < len(lines) and lines[j].strip().startswith("_"):
+                if lines[j].strip().startswith(loop_prefix):
+                    is_target = True
+                    break
+                j += 1
+            
+            if is_target:
+                in_loop = True
+                loop_lines.append(line.rstrip() + '\n')
+                continue
+                
+        if in_loop:
+            if stripped == "loop_" or (stripped.startswith("_") and not stripped.startswith(loop_prefix)):
+                break
+            if stripped != "#":
+                loop_lines.append(line.rstrip() + '\n')
+        else:
+            if stripped.startswith(loop_prefix):
+                loop_lines.append(line.rstrip() + '\n')
+                
+    return loop_lines
+
+def _get_atom_site_cols(lines):
+    """Returns the start index, end index, and column names of the _atom_site loop."""
+    start_idx, end_idx = -1, -1
+    col_names = []
+    in_header, in_data = False, False
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "loop_":
+            if i + 1 < len(lines) and lines[i+1].strip().startswith("_atom_site."):
+                in_header = True
+                start_idx = i
+                continue
+                
+        if in_header:
+            if stripped.startswith("_atom_site."):
+                col_names.append(stripped)
+            elif stripped.startswith("ATOM") or stripped.startswith("HETATM"):
+                in_header = False
+                in_data = True
+                
+        if in_data:
+            if stripped == "loop_" or stripped == "#" or (stripped.startswith("_") and not stripped.startswith("_atom_site.")):
+                end_idx = i
+                break
+                
+    if in_data and end_idx == -1:
+        end_idx = len(lines)
+        
+    return start_idx, end_idx, col_names
+
+def _get_asym_to_entity_from_atom_site(lines, col_names, start_idx, end_idx):
+    """Extracts asym_to_entity mapping from an _atom_site loop."""
+    mapping = {}
+    try:
+        asym_idx = col_names.index("_atom_site.label_asym_id")
+        entity_idx = col_names.index("_atom_site.label_entity_id")
+    except ValueError:
+        return mapping
+        
+    data_start = start_idx + 1 + len(col_names)
+    for i in range(data_start, end_idx):
+        tokens = lines[i].strip().split()
+        if len(tokens) > max(asym_idx, entity_idx):
+            asym = tokens[asym_idx]
+            ent = tokens[entity_idx]
+            if asym not in mapping:
+                mapping[asym] = ent
+    return mapping
+
+def _infer_asym_to_entity(proc_lines, col_names, start_idx, end_idx):
+    """Infers asym_to_entity mapping based on comp_id (HOH/WAT vs others)."""
+    try:
+        asym_idx = col_names.index("_atom_site.label_asym_id")
+        comp_idx = col_names.index("_atom_site.label_comp_id")
+        seq_idx = col_names.index("_atom_site.label_seq_id")
+    except ValueError:
+        return {}, []
+        
+    chain_info = {}
+    data_start = start_idx + 1 + len(col_names)
+    for i in range(data_start, end_idx):
+        line = proc_lines[i].strip()
+        if not line or line.startswith("#"): continue
+        tokens = line.split()
+        if len(tokens) <= max(asym_idx, comp_idx, seq_idx): continue
+            
+        asym = tokens[asym_idx]
+        seq = tokens[seq_idx]
+        comp = tokens[comp_idx]
+        
+        if asym not in chain_info:
+            chain_info[asym] = {'has_seq': False, 'is_water': False}
+        if seq not in ('.', '?'):
+            chain_info[asym]['has_seq'] = True
+        if comp in ('HOH', 'WAT'):
+            chain_info[asym]['is_water'] = True
+            
+    asym_to_entity = {}
+    entity_lines = ["loop_\n", "_entity.id\n", "_entity.type\n"]
+    current_ent_id = 1
+    
+    for asym, info in chain_info.items():
+        ent_type = 'polymer' if info['has_seq'] else ('water' if info['is_water'] else 'non-polymer')
+        asym_to_entity[asym] = str(current_ent_id)
+        entity_lines.append(f"{current_ent_id} {ent_type}\n")
+        current_ent_id += 1
+        
+    return asym_to_entity, entity_lines
+
+def _update_struct_asym_loop(proc_lines, asym_to_entity):
+    """Replaces or creates _struct_asym loop with entity_id."""
+    start_idx, end_idx = -1, -1
+    for i, line in enumerate(proc_lines):
+        if line.strip() == "loop_" and i + 1 < len(proc_lines) and proc_lines[i+1].strip().startswith("_struct_asym."):
+            start_idx = i
+            j = i + 1
+            while j < len(proc_lines):
+                s = proc_lines[j].strip()
+                if s == "#" or s == "loop_" or (s.startswith("_") and not s.startswith("_struct_asym.")):
+                    end_idx = j
+                    break
+                j += 1
+            if end_idx == -1: end_idx = len(proc_lines)
+            break
+            
+    if start_idx != -1:
+        new_loop = ["loop_\n", "  _struct_asym.id\n", "  _struct_asym.entity_id\n"]
+        for asym, ent in asym_to_entity.items():
+            new_loop.append(f"   {asym} {ent}\n")
+        proc_lines[start_idx:end_idx] = new_loop
+
+def _update_atom_site_entity_id(proc_lines, col_names, start_idx, end_idx, asym_to_entity):
+    """Updates _atom_site.label_entity_id in proc_lines."""
+    try:
+        asym_idx = col_names.index("_atom_site.label_asym_id")
+        entity_idx = col_names.index("_atom_site.label_entity_id")
+    except ValueError:
+        return # Cannot update without these columns
+        
+    data_start = start_idx + 1 + len(col_names)
+    for i in range(data_start, end_idx):
+        line = proc_lines[i].strip()
+        if not line or line.startswith("#"): continue
+        tokens = line.split()
+        if len(tokens) > max(asym_idx, entity_idx):
+            asym = tokens[asym_idx]
+            if asym in asym_to_entity:
+                tokens[entity_idx] = asym_to_entity[asym]
+                proc_lines[i] = " ".join(tokens) + "\n"
+
+def restore_cif_entity_metadata(original_cif_path, processed_cif_path):
+    """
+    Reads the _entity block from the original CIF and appends it 
+    to the processed CIF file. Also restores the _atom_site.label_entity_id
+    and _struct_asym block which are often stripped by intermediate tools.
+    """
+    if not os.path.exists(original_cif_path) or not os.path.exists(processed_cif_path): return
+    
+    with open(original_cif_path, 'r', encoding='utf-8') as f: orig_lines = f.readlines()
+    with open(processed_cif_path, 'r', encoding='utf-8') as f: proc_lines = f.readlines()
+
+    # 1. Extract _entity and original mapping
+    entity_lines = _extract_cif_loop(orig_lines, "_entity.")
+    orig_start, orig_end, orig_cols = _get_atom_site_cols(orig_lines)
+    asym_to_entity = _get_asym_to_entity_from_atom_site(orig_lines, orig_cols, orig_start, orig_end)
+
+    # 2. Parse processed file's _atom_site
+    proc_start, proc_end, proc_cols = _get_atom_site_cols(proc_lines)
+    
+    # 3. Fallback inference if missing
+    if not asym_to_entity or not entity_lines:
+        logging.warning(f"Inferring entity metadata for {processed_cif_path}")
+        asym_to_entity, entity_lines = _infer_asym_to_entity(proc_lines, proc_cols, proc_start, proc_end)
+
+    # 4. Update processed lines
+    if asym_to_entity and proc_cols:
+        _update_atom_site_entity_id(proc_lines, proc_cols, proc_start, proc_end, asym_to_entity)
+        _update_struct_asym_loop(proc_lines, asym_to_entity)
+        
+    if entity_lines:
+        proc_lines.extend(["\n#\n"] + entity_lines + ["#\n"])
+        
+    with open(processed_cif_path, 'w', encoding='utf-8') as f:
+        f.writelines(proc_lines)
+
+
 def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
@@ -463,6 +662,12 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
                 logging.error(f"Failed to minimize {protein_base}. Skipping.")
                 continue
             phase15_results.append(item)
+
+    # Restore _entity metadata from original CIF to the protonated FH file
+    for item in phase15_results:
+        protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
+        original_cif_path = os.path.join(input_dir, f"{protein_base}.cif")
+        restore_cif_entity_metadata(original_cif_path, protein_protonated)
 
     # Phase 2: Meeko
     for item in phase15_results:
