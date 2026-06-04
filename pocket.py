@@ -82,7 +82,7 @@ def fetch_biolip_data(uniprot_id, max_retries=3):
         with open(cache_file, 'r', encoding='utf-8') as f:
             return f.read()
 
-    url = f"https://aideepmed.com/BioLiP/qsearch.cgi?uniprot={uniprot_id}&outfmt=txt"
+    url = f"https://zhanggroup.org/BioLiP/qsearch.cgi?outfmt=txt&order=pdbid&uniprot={uniprot_id}"
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
