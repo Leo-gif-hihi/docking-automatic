@@ -500,40 +500,74 @@ def _update_atom_site_entity_id(proc_lines, col_names, start_idx, end_idx, asym_
                 tokens[entity_idx] = asym_to_entity[asym]
                 proc_lines[i] = " ".join(tokens) + "\n"
 
-def restore_cif_entity_metadata(original_cif_path, processed_cif_path):
+def _get_asym_mappings_from_atom_site(lines, col_names, start_idx, end_idx):
+    """Extracts mapping of label_asym_id to auth_asym_id from the _atom_site loop."""
+    mapping = {}
+    try:
+        label_idx = col_names.index("_atom_site.label_asym_id")
+        auth_idx = col_names.index("_atom_site.auth_asym_id")
+    except ValueError:
+        return mapping
+        
+    data_start = start_idx + 1 + len(col_names)
+    for i in range(data_start, end_idx):
+        line = lines[i].strip()
+        if not line or line.startswith("#"): continue
+        tokens = line.split()
+        if len(tokens) > max(label_idx, auth_idx):
+            label = tokens[label_idx]
+            auth = tokens[auth_idx]
+            if label not in mapping:
+                mapping[label] = auth
+    return mapping
+
+def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_path):
     """
     Reads the _entity block from the original CIF and appends it 
-    to the processed CIF file. Also restores the _atom_site.label_entity_id
-    and _struct_asym block which are often stripped by intermediate tools.
+    to the final CIF file. Also restores the _atom_site.label_entity_id
+    and _struct_asym block using mappings cross-checked from the ProDy output.
     """
-    if not os.path.exists(original_cif_path) or not os.path.exists(processed_cif_path): return
+    if not os.path.exists(original_cif_path) or not os.path.exists(prody_cif_path) or not os.path.exists(final_cif_path): return
     
     with open(original_cif_path, 'r', encoding='utf-8') as f: orig_lines = f.readlines()
-    with open(processed_cif_path, 'r', encoding='utf-8') as f: proc_lines = f.readlines()
+    with open(prody_cif_path, 'r', encoding='utf-8') as f: prody_lines = f.readlines()
+    with open(final_cif_path, 'r', encoding='utf-8') as f: final_lines = f.readlines()
 
     # 1. Extract _entity and original mapping
     entity_lines = _extract_cif_loop(orig_lines, "_entity.")
     orig_start, orig_end, orig_cols = _get_atom_site_cols(orig_lines)
-    asym_to_entity = _get_asym_to_entity_from_atom_site(orig_lines, orig_cols, orig_start, orig_end)
+    orig_asym_to_entity = _get_asym_to_entity_from_atom_site(orig_lines, orig_cols, orig_start, orig_end)
 
-    # 2. Parse processed file's _atom_site
-    proc_start, proc_end, proc_cols = _get_atom_site_cols(proc_lines)
+    # 2. Parse ProDy file's _atom_site for label -> auth mapping
+    prody_start, prody_end, prody_cols = _get_atom_site_cols(prody_lines)
+    prody_label_to_auth = _get_asym_mappings_from_atom_site(prody_lines, prody_cols, prody_start, prody_end)
     
-    # 3. Fallback inference if missing
-    if not asym_to_entity or not entity_lines:
-        logging.warning(f"Inferring entity metadata for {processed_cif_path}")
-        asym_to_entity, entity_lines = _infer_asym_to_entity(proc_lines, proc_cols, proc_start, proc_end)
+    # 3. Create mapping for final label_asym_id to entity_id
+    asym_to_entity = {}
+    if prody_label_to_auth and orig_asym_to_entity:
+        for prody_label, prody_auth in prody_label_to_auth.items():
+            if prody_auth not in orig_asym_to_entity:
+                raise ValueError(f"auth_asym_id '{prody_auth}' in the ProDy output does not match any label_asym_id in the original CIF file.")
+            asym_to_entity[prody_label] = orig_asym_to_entity[prody_auth]
+            if prody_label != prody_auth:
+                logging.debug(f"ProDy reassigned label_asym_id from {prody_auth} to {prody_label}. Using the new label.")
 
-    # 4. Update processed lines
-    if asym_to_entity and proc_cols:
-        _update_atom_site_entity_id(proc_lines, proc_cols, proc_start, proc_end, asym_to_entity)
-        _update_struct_asym_loop(proc_lines, asym_to_entity)
+    # 4. Fallback inference if missing
+    final_start, final_end, final_cols = _get_atom_site_cols(final_lines)
+    if not asym_to_entity or not entity_lines:
+        logging.warning(f"Inferring entity metadata for {final_cif_path}")
+        asym_to_entity, entity_lines = _infer_asym_to_entity(final_lines, final_cols, final_start, final_end)
+
+    # 5. Update final lines
+    if asym_to_entity and final_cols:
+        _update_atom_site_entity_id(final_lines, final_cols, final_start, final_end, asym_to_entity)
+        _update_struct_asym_loop(final_lines, asym_to_entity)
         
     if entity_lines:
-        proc_lines.extend(["\n#\n"] + entity_lines + ["#\n"])
+        final_lines.extend(["\n#\n"] + entity_lines + ["#\n"])
         
-    with open(processed_cif_path, 'w', encoding='utf-8') as f:
-        f.writelines(proc_lines)
+    with open(final_cif_path, 'w', encoding='utf-8') as f:
+        f.writelines(final_lines)
 
 
 def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False):
@@ -667,7 +701,8 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
     for item in phase15_results:
         protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
         original_cif_path = os.path.join(input_dir, f"{protein_base}.cif")
-        restore_cif_entity_metadata(original_cif_path, protein_protonated)
+        prody_cif_path = os.path.join(output_dir, f"{protein_base}.cif")
+        restore_cif_entity_metadata(original_cif_path, prody_cif_path, protein_protonated)
 
     # Phase 2: Meeko
     for item in phase15_results:
