@@ -9,7 +9,7 @@ from rich.logging import RichHandler
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from logger_utils import log_step, console
 
-from rank import rank_complexes, print_ranking
+from rank import rank_complexes, print_ranking, generate_complexes
 
 from pocket import process_pockets
 
@@ -329,6 +329,10 @@ def main():
     log_step("WORKFLOW", "Docking complete. Generating ranking...")
     results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
     print_ranking(results, Path(args.output_dir) / "ranking.csv")
+    
+    log_step("WORKFLOW", "Generating complex files for top results...")
+    generate_complexes(results, args.output_dir, protein_clean_dir, display_limit=20)
+    
     log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 
 if __name__ == "__main__":

@@ -141,3 +141,133 @@ def print_ranking(results, output_csv=None):
         except Exception as e:
             logging.error(f"Error saving to CSV: {e}")
 
+def _convert_to_pdb(input_file, in_format, output_file, extra_args=None):
+    import subprocess
+    cmd = ["obabel", "-i", in_format, str(input_file)]
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend(["-o", "pdb", "-O", str(output_file)])
+    subprocess.run(cmd, check=True, capture_output=True)
+
+def _find_available_chain(pdb_file):
+    import string
+    used_chains = set()
+    if pdb_file.exists():
+        with open(pdb_file, 'r') as p_f:
+            for line in p_f:
+                if line.startswith(("ATOM", "HETATM")) and len(line) > 21:
+                    used_chains.add(line[21])
+    
+    # Legacy PDB allows A-Z, a-z, and 0-9
+    all_candidates = "ZYXWVUTSRQPONMLKJIHGFEDCBA" + string.ascii_lowercase[::-1] + string.digits[::-1]
+    for candidate in all_candidates:
+        if candidate not in used_chains:
+            return candidate
+    return None
+
+def _combine_complex_pdbs(prot_pdb, lig_pdb, complex_pdb, lig_chain):
+    max_atom_serial = 0
+    with open(complex_pdb, 'w') as out_f:
+        # Write protein, skipping END and CONECT lines
+        with open(prot_pdb, 'r') as p_f:
+            for line in p_f:
+                if not line.startswith(("END", "CONECT", "MASTER")):
+                    if line.startswith(("ATOM", "HETATM")) and len(line) >= 11:
+                        try:
+                            serial = int(line[6:11].strip())
+                            if serial > max_atom_serial:
+                                max_atom_serial = serial
+                        except ValueError:
+                            pass
+                    out_f.write(line)
+        # Write ligand, skipping CONECT lines and adding a chain ID
+        with open(lig_pdb, 'r') as l_f:
+            for line in l_f:
+                if not line.startswith(("END", "CONECT", "MASTER", "COMPND", "AUTHOR")):
+                    # Assign the unique chain to the ligand to differentiate it from the protein
+                    if line.startswith(("ATOM", "HETATM")) and len(line) > 21:
+                        line = line[:21] + lig_chain + line[22:]
+                        
+                        # Renumber atom serial
+                        max_atom_serial += 1
+                        serial_str = f"{max_atom_serial:>5}"
+                        # If it exceeds 5 characters (e.g. 100,000), typical PDB format overflows.
+                        if len(serial_str) > 5:
+                            raise ValueError(f"Atom serial number {max_atom_serial} exceeds 99999 (legacy PDB limit).")
+                        line = line[:6] + serial_str + line[11:]
+                        
+                    out_f.write(line)
+        # Write END
+        out_f.write("END\n")
+
+def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20):
+    if not results:
+        return
+    
+    import subprocess
+    import tempfile
+    import logging
+    import os
+    from pathlib import Path
+    from logger_utils import log_step
+
+    vis_dir = Path(output_dir) / "visualization"
+    os.makedirs(vis_dir, exist_ok=True)
+    
+    log_step(None, f"Generating PDB complex files for top {min(display_limit, len(results))} results...", color="white")
+    
+    for protein, pocket, ligand, energy in results[:display_limit]:
+        protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
+        
+        # Paths
+        protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
+        
+        ligand_sdf = Path(output_dir) / "vina_output" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
+        
+        complex_pdb = vis_dir / f"{protein_pocket_base}_{ligand}_complex.pdb"
+        
+        if not protein_cif.exists():
+            logging.warning(f"Protein file missing: {protein_cif}. Skipping complex generation.")
+            continue
+            
+        if not ligand_sdf.exists():
+            logging.warning(f"Ligand SDF file missing: {ligand_sdf}. Skipping complex generation.")
+            continue
+            
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_prot_pdb = Path(tmpdir) / "prot.pdb"
+            tmp_lig_pdb = Path(tmpdir) / "lig.pdb"
+            
+            # Convert CIF to PDB
+            try:
+                _convert_to_pdb(protein_cif, "cif", tmp_prot_pdb)
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Failed to convert protein CIF to PDB: {e}")
+                continue
+                
+            # Convert SDF to PDB
+            try:
+                _convert_to_pdb(ligand_sdf, "sdf", tmp_lig_pdb, extra_args=["-f", "1", "-l", "1"])
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Failed to convert ligand SDF to PDB: {e}")
+                continue
+                
+            # Determine available chain ID for ligand
+            lig_chain = _find_available_chain(tmp_prot_pdb)
+            if lig_chain is None:
+                logging.warning(f"No available chain IDs left for {protein_pocket_base}_{ligand} (Legacy PDB limit reached). Skipping complex generation.")
+                continue
+
+            # Combine PDBs
+            try:
+                _combine_complex_pdbs(tmp_prot_pdb, tmp_lig_pdb, complex_pdb, lig_chain)
+                logging.debug(f"Created complex: {complex_pdb}")
+            except Exception as e:
+                logging.warning(f"Skipping complex {protein_pocket_base}_{ligand}: {e}")
+                if complex_pdb.exists():
+                    try:
+                        complex_pdb.unlink()
+                    except OSError:
+                        pass
+                
+    log_step(None, f"Complexes saved to {vis_dir}", color="cyan")
