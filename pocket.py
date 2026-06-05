@@ -9,6 +9,7 @@ import requests
 import json
 import numpy as np
 from sklearn.cluster import DBSCAN
+from logger_utils import log_step
 
 def extract_uniprot_ids_from_cif(cif_file):
     """
@@ -590,7 +591,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     unprocessed_proteins = []
     total_proteins = len(protein_files)
     for i, protein_file in enumerate(protein_files, 1):
-        logging.info(f"Completed {i}/{total_proteins} proteins")
+        log_step(None, f"Processing {i}/{total_proteins} proteins", color="white")
         logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
         chain_to_uniprot = extract_uniprot_ids_from_cif(str(protein_file))
         
@@ -733,7 +734,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
         with open(unprocessed_file, "w", encoding="utf-8") as f:
             for p in unprocessed_proteins:
                 f.write(f"{p}\n")
-        logging.warning(f"Saved {len(unprocessed_proteins)} unprocessed proteins to {unprocessed_file}")
+        log_step(None, f"Saved {len(unprocessed_proteins)} unprocessed proteins to {unprocessed_file}", color="white")
         return unprocessed_file
     return None
 

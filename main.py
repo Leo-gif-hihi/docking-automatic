@@ -5,6 +5,10 @@ import logging
 import time
 from pathlib import Path
 
+from rich.logging import RichHandler
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+from logger_utils import log_step, console
+
 from rank import rank_complexes, print_ranking
 
 from pocket import process_pockets
@@ -49,9 +53,9 @@ def setup_logging(output_dir):
     file_handler.setFormatter(file_format)
     logger.addHandler(file_handler)
 
-    # 2. Console Handler: INFO level for terminal
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    # 2. Console Handler: WARNING level for terminal (UI is handled by log_step)
+    console_handler = RichHandler(rich_tracebacks=True, show_time=False, show_path=False)
+    console_handler.setLevel(logging.WARNING)
     console_format = logging.Formatter('%(message)s')
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
@@ -132,19 +136,22 @@ def main():
 
     existing_dirs = [d for d in [args.output_dir, str(protein_path), protein_clean_dir, ligand_prepared_dir] if os.path.exists(d)]
     if existing_dirs:
-        print(f"\n\033[1;33m[WARNING] The following directories already exist: {', '.join(existing_dirs)}\033[0m")
-        print("\033[1;33mOld results in these folders can conflict with the current pipeline.\033[0m")
-        print(
-            "\033[1;33mIf you want to use the previous results and ensure that all files in these directories "
+        print()
+        log_step("WARNING", f"The following directories already exist: {', '.join(existing_dirs)}", color="yellow")
+        log_step("WARNING", "Old results in these folders can conflict with the current pipeline.", color="yellow")
+        log_step(
+            "WARNING",
+            "If you want to use the previous results and ensure that all files in these directories "
             "are relevant to your project (for example, rerun the workflow after interrupted), "
-            "feel free to ignore this warning.\033[0m"
+            "feel free to ignore this warning.", color="yellow"
         )
         ans = input("Do you want to delete them before continuing? (y/N): ").strip().lower()
         if ans == 'y':
             import shutil
             for d in existing_dirs:
                 shutil.rmtree(d, ignore_errors=True)
-            print("\033[1;32mDirectories deleted.\033[0m\n")
+            log_step("INFO", "Directories deleted.")
+            print()
         else:
             print("Continuing without deleting...\n")
 
@@ -155,9 +162,10 @@ def main():
     os.makedirs(protein_path, exist_ok=True)
     try:
         step_start = time.time()
-        logging.info("\n\033[1;32m[WORKFLOW] Starting protein download process...\033[0m")
+        print()
+        log_step("WORKFLOW", "Starting protein download process...")
         download_proteins(args.protein_list, str(protein_path))
-        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+        log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
     except FileNotFoundError:
         return
 
@@ -170,32 +178,36 @@ def main():
     # Clean and prepare proteins
     prepared_proteins = {}
     step_start = time.time()
-    logging.info("\n\033[1;32m[WORKFLOW] Preparing proteins...\033[0m")
+    print()
+    log_step("WORKFLOW", "Preparing proteins...")
     prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization)
     
     protein_clean_path = Path(protein_clean_dir)
-    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+    log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 
     # Prepare ligands
     step_start = time.time()
-    logging.info("\n\033[1;32m[WORKFLOW] Preparing ligands...\033[0m")
+    print()
+    log_step("WORKFLOW", "Preparing ligands...")
     
     prepared_ligands = prepare_ligands(ligand_path, args.ph, ligand_prepared_dir, generate_isomers=args.generate_isomers)
         
-    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+    log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 
     # Identify pockets (either as part of pipeline or as a dedicated identify-only run)
     vis_dir = Path(args.output_dir) / "visualization_pocket"
     os.makedirs(vis_dir, exist_ok=True)
     if args.identify_pockets_only or not args.skip_autopoc:
         step_start = time.time()
-        logging.info("\n\033[1;32m[WORKFLOW] Identifying pockets...\033[0m")
+        print()
+        log_step("WORKFLOW", "Identifying pockets...")
         if args.identify_pockets_only and args.skip_autopoc:
             logging.warning("Both --skip_autopoc and --identify_pockets_only provided; ignoring --skip_autopoc and running pocket identification.")
         unprocessed_list = process_pockets(protein_clean_path, box_path, output_dir=str(vis_dir), dock_all_pockets=args.dock_all_pockets)
         
         if args.dock_all_pockets:
-            print(f"\n\033[1;36m[INTERACTIVE] Pocket identification complete. Check {vis_dir}/pocket_reliability.csv.\033[0m")
+            print()
+            log_step("INTERACTIVE", f"Pocket identification complete. Check {vis_dir}/pocket_reliability.csv.", color="cyan")
             eliminated = input("Enter pocket IDs to eliminate separated by commas (e.g. 1, 3, 5), or press Enter to keep all: ").strip()
             if eliminated:
                 eliminated_ids = [pid.strip() for pid in eliminated.split(',') if pid.strip()]
@@ -227,12 +239,14 @@ def main():
 
         # Backup pocket identification using p2rank
         if unprocessed_list and os.path.exists(unprocessed_list):
-            logging.info("\n\033[1;33m[WORKFLOW] Running p2rank as a backup for unprocessed proteins...\033[0m")
+            print()
+            log_step("WORKFLOW", "Running p2rank as a backup for unprocessed proteins...")
             process_unprocessed_with_p2rank(str(unprocessed_list), str(protein_clean_path), str(box_path), vis_dir=str(vis_dir))
             
-        logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+        log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
         if args.identify_pockets_only:
-            logging.info("\n\033[1;32m[WORKFLOW] Workflow complete. Exiting (identify-only mode).\033[0m")
+            print()
+            log_step("WORKFLOW", "Workflow complete. Exiting (identify-only mode).")
             return
 
     if not box_path.exists() and not args.skip_autopoc:
@@ -243,46 +257,62 @@ def main():
     total_jobs = len(jobs_list)
     error_jobs = []
     step_start = time.time()
-    logging.info(f"\n\033[1;32m[WORKFLOW] Generated docking jobs. Starting docking process for {total_jobs} combinations...\033[0m")
-    for i, (protein_base, ligand_base, box_file) in enumerate(jobs_list, 1):
-        protein_pocket_base = box_file.name.replace(".box.txt", "")
-        logging.info(f"Docking {i}/{total_jobs} complexes")
-        logging.debug(f"\n--- Docking {ligand_base} to {protein_pocket_base} ---")
+    print()
+    log_step("WORKFLOW", f"Generated docking jobs. Starting docking process for {total_jobs} combinations...")
+    
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+        expand=True
+    ) as progress:
+        docking_task = progress.add_task("[cyan]Starting docking...", total=total_jobs)
+        for i, (protein_base, ligand_base, box_file) in enumerate(jobs_list, 1):
+            try:
+                protein_pocket_base = box_file.name.replace(".box.txt", "")
+                progress.update(docking_task, description=f"[cyan]Docking [bold]{protein_pocket_base}[/bold] & [bold]{ligand_base}[/bold] ({i}/{total_jobs})")
+                logging.debug(f"\n--- Docking {ligand_base} to {protein_pocket_base} ---")
+                
+                vina_out_dir = Path(args.output_dir) / "vina_output"
+                complex_output_dir = vina_out_dir / f"{protein_pocket_base}_{ligand_base}"
+                os.makedirs(complex_output_dir, exist_ok=True)
         
-        vina_out_dir = Path(args.output_dir) / "vina_output"
-        complex_output_dir = vina_out_dir / f"{protein_pocket_base}_{ligand_base}"
-        os.makedirs(complex_output_dir, exist_ok=True)
-
-        # CHECK IF VINA LOG ALREADY EXISTS AND IS COMPLETE
-        expected_log_file = complex_output_dir / f"{protein_pocket_base}_{ligand_base}_vina.log"
-        if expected_log_file.exists():
-            with open(expected_log_file, "r") as log_file:
-                log_content = log_file.read()
-                if log_content.count("*") >= 51:
-                    logging.debug(f"Log file {expected_log_file.name} already exists and docking is complete. Skipping docking...")
+                # CHECK IF VINA LOG ALREADY EXISTS AND IS COMPLETE
+                expected_log_file = complex_output_dir / f"{protein_pocket_base}_{ligand_base}_vina.log"
+                if expected_log_file.exists():
+                    with open(expected_log_file, "r") as log_file:
+                        log_content = log_file.read()
+                        if log_content.count("*") >= 51:
+                            logging.debug(f"Log file {expected_log_file.name} already exists and docking is complete. Skipping docking...")
+                            continue
+                        else:
+                            logging.debug(f"Log file {expected_log_file.name} exists but docking is incomplete. Proceeding with docking...")
+                    
+                if not box_file.exists():
+                    logging.warning(f"Error: Box file {box_file.name} not found. Skipping docking...")
+                    error_jobs.append(f"{protein_base}\t{ligand_base}\tMissing Box File")
                     continue
-                else:
-                    logging.debug(f"Log file {expected_log_file.name} exists but docking is incomplete. Proceeding with docking...")
-            
-        if not box_file.exists():
-            logging.warning(f"Error: Box file {box_file.name} not found. Skipping docking...")
-            error_jobs.append(f"{protein_base}\t{ligand_base}\tMissing Box File")
-            continue
-            
-        protein_pdbqt = prepared_proteins.get(protein_base)
-        ligand_pdbqt = prepared_ligands.get(ligand_base)
-        
-        if not protein_pdbqt or not ligand_pdbqt:
-            logging.error(f"Error: Missing prepared files for {protein_base} or {ligand_base}. Skipping...")
-            error_jobs.append(f"{protein_base}\t{ligand_base}\tPreparation Failed")
-            continue
-            
-        success = run_docking_pipeline(
-            protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
-            protein_pocket_base, ligand_base, args.cpus
-        )
-        if not success:
-            error_jobs.append(f"{protein_base}\t{ligand_base}\tDocking Failed")
+                    
+                protein_pdbqt = prepared_proteins.get(protein_base)
+                ligand_pdbqt = prepared_ligands.get(ligand_base)
+                
+                if not protein_pdbqt or not ligand_pdbqt:
+                    logging.error(f"Error: Missing prepared files for {protein_base} or {ligand_base}. Skipping...")
+                    error_jobs.append(f"{protein_base}\t{ligand_base}\tPreparation Failed")
+                    continue
+                    
+                success = run_docking_pipeline(
+                    protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
+                    protein_pocket_base, ligand_base, args.cpus
+                )
+                if not success:
+                    error_jobs.append(f"{protein_base}\t{ligand_base}\tDocking Failed")
+            finally:
+                progress.advance(docking_task)
 
     if error_jobs:
         error_file = Path(args.output_dir) / "error_complexes.txt"
@@ -291,14 +321,15 @@ def main():
             ef.write("\n".join(error_jobs) + "\n")
         logging.warning(f"\nRecorded {len(error_jobs)} failed docking jobs in {error_file}")
 
-    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+    log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 
     # Rank complexes after all docking jobs are complete
     step_start = time.time()
-    logging.info("\n\033[1;32m[WORKFLOW] Docking complete. Generating ranking...\033[0m")
+    print()
+    log_step("WORKFLOW", "Docking complete. Generating ranking...")
     results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
     print_ranking(results, Path(args.output_dir) / "ranking.csv")
-    logging.info(f"\033[1;36m[TIME] Step duration: {time.time() - step_start:.2f} seconds\033[0m")
+    log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 
 if __name__ == "__main__":
     main()

@@ -4,6 +4,7 @@ import logging
 import csv
 import shutil
 from pathlib import Path
+from logger_utils import log_step
 
 def get_protein_base(protein):
     if protein.endswith('FH.pdb') or protein.endswith('FH.cif'):
@@ -47,13 +48,13 @@ def create_p2rank_dataset(proteins, prepared_dir, output_ds_path):
                 logging.warning(f"Protein file missing in prepared directory: {protein_path}")
 
     if valid_proteins_count == 0:
-        logging.info("No valid protein files found to add to the dataset.")
+        logging.warning("No valid protein files found to add to the dataset.")
         # Clean up the empty dataset file if no valid proteins were found
         if os.path.exists(output_ds_path):
             os.remove(output_ds_path)
         return False
         
-    logging.info(f"Created p2rank dataset file with {valid_proteins_count} entries: {output_ds_path}")
+    log_step(None, f"Created p2rank dataset file with {valid_proteins_count} entries: {output_ds_path}", color="white")
     return True
 
 def run_prank_predict(ds_file_path, output_dir):
@@ -77,10 +78,10 @@ def run_prank_predict(ds_file_path, output_dir):
         str(Path(output_dir).absolute())
     ]
     
-    logging.info(f"Running p2rank command: {' '.join(cmd)}")
+    log_step(None, f"Running p2rank command: {' '.join(cmd)}", color="white")
     try:
         subprocess.run(cmd, check=True)
-        logging.info(f"p2rank prediction completed successfully. Output saved to: {output_dir}")
+        log_step(None, f"p2rank prediction completed successfully. Output saved to: {output_dir}", color="white")
         return True
     except subprocess.CalledProcessError as e:
         logging.error(f"Error executing p2rank: {e}")
@@ -128,7 +129,7 @@ def create_box_from_predictions(p2rank_out_dir, proteins, box_dir, prepared_dir,
                             bf.write(f"size_z = {size:.3f}\n")
                             bf.write(f"exhaustiveness = 32\n") # Default for size=30^3
                         
-                        logging.info(f"Created box file for {protein} at {box_filename}")
+                        logging.debug(f"Created box file for {protein} at {box_filename}")
                         
                         box_params = {
                             'center_x': center_x, 'center_y': center_y, 'center_z': center_z,
@@ -171,7 +172,7 @@ def process_unprocessed_with_p2rank(unprocessed_file, prepared_dir, box_dir, vis
             logging.debug(f"Box file already exists for {p} ({box_file.name}), skipping p2rank.")
 
     if not proteins:
-        logging.info("All unprocessed proteins already have box files. Skipping p2rank workflow.")
+        log_step(None, "All unprocessed proteins already have box files. Skipping p2rank workflow.",color="white")
         return
 
     # 2. Create the dataset file

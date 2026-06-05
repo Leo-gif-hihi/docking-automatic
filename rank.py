@@ -3,6 +3,7 @@ import csv
 import logging
 import re
 from pathlib import Path
+from logger_utils import log_step
 
 def extract_free_energy(log_file):
     """Parses a Vina log file and returns the top free energy (affinity) score."""
@@ -93,11 +94,13 @@ def print_ranking(results, output_csv=None):
         logging.warning("No valid log files or energy scores found.")
         return
         
-    logging.info("\n--- Ranking of Complexes by Free Energy ---")
-    logging.info(f"{'Protein':<15} | {'Pocket ID':<10} | {'Ligand':<25} | {'Affinity (kcal/mol)':<20}")
-    logging.info("-" * 79)
-    for protein, pocket, ligand, energy in results:
-        logging.info(f"{protein:<15} | {pocket:<10} | {ligand:<25} | {energy:<20.2f}")
+    print()
+    display_limit = 20
+    log_step(None, f"--- Top {min(display_limit, len(results))} Ranking of Complexes by Free Energy (Total: {len(results)}) ---", color="magenta")
+    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'Ligand':<25} | {'Affinity (kcal/mol)':<20}", color="magenta")
+    log_step(None, "-" * 79, color="magenta")
+    for protein, pocket, ligand, energy in results[:display_limit]:
+        log_step(None, f"{protein:<15} | {pocket:<10} | {ligand:<25} | {energy:<20.2f}", color="magenta")
 
     if output_csv:
         try:
@@ -106,7 +109,8 @@ def print_ranking(results, output_csv=None):
                 writer.writerow(['Protein', 'Pocket ID', 'Ligand', 'Affinity (kcal/mol)'])
                 for protein, pocket, ligand, energy in results:
                     writer.writerow([protein, pocket, ligand, energy])
-            logging.info(f"\nRanking saved to {output_csv}")
+            print()
+            log_step(None, f"Ranking saved to {output_csv}", color="magenta")
             
             # Check for isomers and create a best isomers ranking
             has_isomers = any("_isomer_" in ligand for _, _, ligand, _ in results)
@@ -132,7 +136,7 @@ def print_ranking(results, output_csv=None):
                     writer.writerow(['Protein', 'Pocket ID', 'Best_Isomer_Ligand', 'Affinity (kcal/mol)'])
                     for protein, pocket, ligand, energy in best_results:
                         writer.writerow([protein, pocket, ligand, energy])
-                logging.info(f"Best isomers ranking saved to {best_csv}")
+                log_step(None, f"Best isomers ranking saved to {best_csv}", color="magenta")
                 
         except Exception as e:
             logging.error(f"Error saving to CSV: {e}")

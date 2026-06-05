@@ -4,6 +4,7 @@ import argparse
 import sys
 import logging
 from prody import parseMMCIF, writeMMCIF, confProDy
+from logger_utils import log_step, console
 
 # Turn off ProDy's progress text to keep your terminal clean
 confProDy(verbosity='none')
@@ -672,7 +673,7 @@ def create_fh_zip_archive(phase1_results, output_dir):
                 _, protein_protonated, _, _ = item
                 if os.path.exists(protein_protonated):
                     zipf.write(protein_protonated, os.path.basename(str(protein_protonated)))
-        logging.info(f"\033[1;32mCreated archive {zip_path} containing FH files for easy cloud upload.\033[0m")
+        log_step(None, f"Created archive {zip_path} containing FH files for easy cloud upload.", color="white")
     except Exception as e:
         logging.error(f"Failed to create {zip_path}: {e}")
 
@@ -786,19 +787,20 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
     # Phase 1.5: Minimization and User Prompt
     phase15_results = []
     if skip_minimization and phase1_results:
-        logging.info("\n\033[1;33m[INTERACTIVE] --skip_minimization is provided.\033[0m")
-        logging.info("\033[1;33mThe pipeline has stopped to allow manual minimization of the generated FH files (*FH.cif).\033[0m")
+        print()
+        log_step("INTERACTIVE", "--skip_minimization is provided.", color="yellow")
+        log_step("INTERACTIVE", "The pipeline has stopped to allow manual minimization of the generated FH files (*FH.cif).", color="yellow")
         
         create_fh_zip_archive(phase1_results, output_dir)
 
         while True:
             ans = input("Have you manually minimized the FH files in the cloud server and replaced the local files? (y/n): ").strip().lower()
             if ans == 'y':
-                logging.info("\033[1;32mContinuing processing...\033[0m")
+                log_step(None, "Continuing processing...", color="white")
                 phase15_results = phase1_results
                 break
             else:
-                logging.warning("\033[1;33mPlease minimize the FH files and replace them in the folder before continuing.\033[0m")
+                log_step("WARNING", "Please minimize the FH files and replace them in the folder before continuing.", color="yellow")
     else:
         for item in phase1_results:
             protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
