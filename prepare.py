@@ -601,13 +601,25 @@ def _update_struct_ref_seq_pdbx_strand_id(struct_ref_seq_lines, orig_label_to_au
                 final_label = prody_auth_to_label.get(orig_label, orig_label)
                 struct_ref_seq_lines[i] = f"_struct_ref_seq.pdbx_strand_id {final_label}\n"
 
+def _get_asym_id_mapping(orig_label_to_auth, prody_label_to_auth):
+    """Generates a mapping from original label_asym_id to processed label_asym_id."""
+    label_mapping = {}
+    if orig_label_to_auth and prody_label_to_auth:
+        for prody_label, prody_auth in prody_label_to_auth.items():
+            # In ProDy's output, the auth_asym_id column corresponds to the original label_asym_id.
+            orig_label = prody_auth
+            if orig_label in orig_label_to_auth:
+                label_mapping[orig_label] = prody_label
+    return label_mapping
+
 def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_path):
     """
     Reads the _entity block from the original CIF and appends it 
     to the final CIF file. Also restores the _atom_site.label_entity_id
     and _struct_asym block using mappings cross-checked from the ProDy output.
+    Returns a dictionary mapping original label_asym_id to processed label_asym_id.
     """
-    if not os.path.exists(original_cif_path) or not os.path.exists(prody_cif_path) or not os.path.exists(final_cif_path): return
+    if not os.path.exists(original_cif_path) or not os.path.exists(prody_cif_path) or not os.path.exists(final_cif_path): return {}
     
     with open(original_cif_path, 'r', encoding='utf-8') as f: orig_lines = f.readlines()
     with open(prody_cif_path, 'r', encoding='utf-8') as f: prody_lines = f.readlines()
@@ -658,6 +670,8 @@ def restore_cif_entity_metadata(original_cif_path, prody_cif_path, final_cif_pat
         
     with open(final_cif_path, 'w', encoding='utf-8') as f:
         f.writelines(final_lines)
+
+    return _get_asym_id_mapping(orig_label_to_auth, prody_label_to_auth)
 
 
 def create_fh_zip_archive(phase1_results, output_dir):
@@ -810,11 +824,28 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
             phase15_results.append(item)
 
     # Restore _entity metadata from original CIF to the protonated FH file
+    new_label_mappings = {}
     for item in phase15_results:
         protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
         original_cif_path = os.path.join(input_dir, f"{protein_base}.cif")
         prody_cif_path = os.path.join(output_dir, f"{protein_base}.cif")
-        restore_cif_entity_metadata(original_cif_path, prody_cif_path, protein_protonated)
+        mapping = restore_cif_entity_metadata(original_cif_path, prody_cif_path, protein_protonated)
+        if mapping:
+            new_label_mappings[protein_base] = mapping
+
+    if new_label_mappings:
+        import json
+        mapping_file = os.path.join(output_dir, "asym_id_mapping.json")
+        existing_mappings = {}
+        if os.path.exists(mapping_file):
+            try:
+                with open(mapping_file, "r") as f:
+                    existing_mappings = json.load(f)
+            except json.JSONDecodeError:
+                pass
+        existing_mappings.update(new_label_mappings)
+        with open(mapping_file, "w") as f:
+            json.dump(existing_mappings, f, indent=4)
 
     # Phase 2: Meeko
     for item in phase15_results:
