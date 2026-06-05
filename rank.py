@@ -200,6 +200,58 @@ def _combine_complex_pdbs(prot_pdb, lig_pdb, complex_pdb, lig_chain):
         # Write END
         out_f.write("END\n")
 
+def _map_protein_chains(tmp_prot_pdb, mapped_prot_pdb, protein, asym_id_mapping):
+    import logging
+    import string
+    
+    protein_mapping = asym_id_mapping.get(protein) or asym_id_mapping.get(f"{protein}.cif") or {}
+    prody_to_orig = {v: k for k, v in protein_mapping.items()}
+    
+    existing_chains = set()
+    with open(tmp_prot_pdb, 'r') as in_f:
+        for line in in_f:
+            if line.startswith(("ATOM", "HETATM")) and len(line) > 21:
+                existing_chains.add(line[21])
+                
+    used_chains = set()
+    for current_chain, orig_chain in prody_to_orig.items():
+        if len(orig_chain) == 1:
+            used_chains.add(orig_chain)
+            
+    for current_chain in existing_chains:
+        if current_chain not in prody_to_orig:
+            used_chains.add(current_chain)
+            
+    all_candidates = "ZYXWVUTSRQPONMLKJIHGFEDCBA" + string.ascii_lowercase[::-1] + string.digits[::-1]
+    
+    final_mapping = {}
+    for current_chain, orig_chain in prody_to_orig.items():
+        if len(orig_chain) == 1:
+            final_mapping[current_chain] = orig_chain
+        else:
+            assigned = False
+            for candidate in all_candidates:
+                if candidate not in used_chains:
+                    final_mapping[current_chain] = candidate
+                    used_chains.add(candidate)
+                    logging.warning(f"Original chain ID '{orig_chain}' for {protein} is > 1 char. Reassigned to '{candidate}'.")
+                    assigned = True
+                    break
+            if not assigned:
+                logging.warning(f"Cannot reassign chain for '{orig_chain}' in {protein}. Legacy PDB limit reached.")
+                return False, None
+    
+    with open(tmp_prot_pdb, 'r') as in_f, open(mapped_prot_pdb, 'w') as out_f:
+        for line in in_f:
+            if line.startswith(("ATOM", "HETATM")) and len(line) > 21:
+                current_chain = line[21]
+                if current_chain in final_mapping:
+                    line = line[:21] + final_mapping[current_chain] + line[22:]
+            out_f.write(line)
+            
+    orig_to_final = {orig: final_mapping[curr] for curr, orig in prody_to_orig.items() if curr in final_mapping}
+    return True, orig_to_final
+
 def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20):
     if not results:
         return
@@ -208,14 +260,25 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
     import tempfile
     import logging
     import os
+    import json
     from pathlib import Path
     from logger_utils import log_step
 
     vis_dir = Path(output_dir) / "visualization"
     os.makedirs(vis_dir, exist_ok=True)
     
+    mapping_file = Path(protein_clean_dir) / "asym_id_mapping.json"
+    asym_id_mapping = {}
+    if mapping_file.exists():
+        try:
+            with open(mapping_file, "r") as f:
+                asym_id_mapping = json.load(f)
+        except json.JSONDecodeError:
+            logging.warning(f"Failed to parse {mapping_file}")
+
     log_step(None, f"Generating PDB complex files for top {min(display_limit, len(results))} results...", color="white")
     
+    complex_chain_mappings = {}
     for protein, pocket, ligand, energy in results[:display_limit]:
         protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
         
@@ -252,16 +315,25 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
                 logging.error(f"Failed to convert ligand SDF to PDB: {e}")
                 continue
                 
+            # Apply original chain ID mapping
+            mapped_prot_pdb = Path(tmpdir) / "mapped_prot.pdb"
+            success, orig_to_final = _map_protein_chains(tmp_prot_pdb, mapped_prot_pdb, protein, asym_id_mapping)
+            if not success:
+                logging.warning(f"Skipping complex for {protein} due to legacy PDB chain limitation.")
+                continue
+
             # Determine available chain ID for ligand
-            lig_chain = _find_available_chain(tmp_prot_pdb)
+            lig_chain = _find_available_chain(mapped_prot_pdb)
             if lig_chain is None:
                 logging.warning(f"No available chain IDs left for {protein_pocket_base}_{ligand} (Legacy PDB limit reached). Skipping complex generation.")
                 continue
 
             # Combine PDBs
             try:
-                _combine_complex_pdbs(tmp_prot_pdb, tmp_lig_pdb, complex_pdb, lig_chain)
+                _combine_complex_pdbs(mapped_prot_pdb, tmp_lig_pdb, complex_pdb, lig_chain)
                 logging.debug(f"Created complex: {complex_pdb}")
+                orig_to_final["LIGAND"] = lig_chain
+                complex_chain_mappings[f"{protein_pocket_base}_{ligand}"] = orig_to_final
             except Exception as e:
                 logging.warning(f"Skipping complex {protein_pocket_base}_{ligand}: {e}")
                 if complex_pdb.exists():
@@ -270,4 +342,13 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
                     except OSError:
                         pass
                 
-    log_step(None, f"Complexes saved to {vis_dir}", color="cyan")
+    if complex_chain_mappings:
+        mapping_out_file = vis_dir / "final_chain_mapping.json"
+        try:
+            with open(mapping_out_file, "w") as f:
+                json.dump(complex_chain_mappings, f, indent=4)
+            log_step(None, f"Final chain mappings saved to {mapping_out_file}", color="white")
+        except Exception as e:
+            logging.error(f"Failed to save final chain mappings: {e}")
+            
+    log_step(None, f"Complexes saved to {vis_dir}", color="white")
