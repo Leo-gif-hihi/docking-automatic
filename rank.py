@@ -358,3 +358,137 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
             logging.error(f"Failed to save final chain mappings: {e}")
             
     log_step(None, f"Complexes saved to {vis_dir}", color="white")
+
+def visualize_prolif_complexes(results, output_dir, protein_clean_dir, display_limit=20):
+    if not results:
+        return
+        
+    import os
+    import logging
+    from pathlib import Path
+    import tempfile
+    import time
+    from logger_utils import log_step
+    import warnings
+    import sys
+    
+    # Aggressively ignore all warnings during the visualization
+    warnings.simplefilter("ignore")
+    os.environ["PYTHONWARNINGS"] = "ignore"
+    
+    # Ultimate silence: redirect stderr to /dev/null during imports
+    devnull = open(os.devnull, 'w')
+    old_stderr = sys.stderr
+    sys.stderr = devnull
+    try:
+        import MDAnalysis as mda
+        import prolif as plf
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+    except ImportError as e:
+        sys.stderr = old_stderr
+        devnull.close()
+        logging.error(f"Missing dependency for ProLif visualization: {e}")
+        log_step(None, f"Skipping ProLif visualization due to missing dependency: {e}", color="yellow")
+        return
+    finally:
+        sys.stderr = old_stderr
+        devnull.close()
+
+    vis_dir = Path(output_dir) / "visualization" / "prolif"
+    os.makedirs(vis_dir, exist_ok=True)
+    
+    log_step(None, f"Generating ProLif visualizations for top {min(display_limit, len(results))} results...", color="white")
+
+    # Setup headless chrome
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--window-size=1200,800")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+    except Exception as e:
+        logging.error(f"Failed to initialize Selenium Chrome driver: {e}")
+        log_step(None, "Skipping ProLif visualization because Selenium Chrome driver could not be initialized.", color="yellow")
+        return
+
+    try:
+        for protein, pocket, ligand, run, energy in results[:display_limit]:
+            protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
+            
+            # Load the FH.cif file
+            protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
+            ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
+            
+            out_png = vis_dir / f"{protein_pocket_base}_{ligand}_prolif.png"
+            
+            if not protein_cif.exists():
+                logging.warning(f"Protein file missing: {protein_cif}. Skipping ProLif.")
+                continue
+                
+            if not ligand_sdf.exists():
+                logging.warning(f"Ligand SDF file missing: {ligand_sdf}. Skipping ProLif.")
+                continue
+
+            try:
+                # 1. Protein Preparation (Convert CIF to PDB for MDAnalysis)
+                with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp_pdb:
+                    tmp_prot_pdb = Path(tmp_pdb.name)
+                
+                try:
+                    # _convert_to_pdb is defined earlier in rank.py
+                    _convert_to_pdb(protein_cif, "cif", tmp_prot_pdb)
+                    u = mda.Universe(str(tmp_prot_pdb))
+                    protein_mol = plf.Molecule.from_mda(u)
+                finally:
+                    try:
+                        os.unlink(tmp_prot_pdb)
+                    except OSError:
+                        pass
+
+                # 2. Docking Poses Preparation
+                pose_iterable = plf.sdf_supplier(str(ligand_sdf))
+
+                # 3. Fingerprint Generation
+                fp = plf.Fingerprint()
+                fp.run_from_iterable(pose_iterable, protein_mol, progress=False)
+
+                # 4. Visualization (Target Pose 0)
+                pose_index = 0
+                view = fp.plot_lignetwork(pose_iterable[pose_index], kind="frame", frame=pose_index)
+                
+                with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp_html:
+                    tmp_html_path = tmp_html.name
+                    
+                # Save Pyvis/HTML output
+                if hasattr(view, 'save'):
+                    view.save(tmp_html_path)
+                elif hasattr(view, 'write_html'):
+                    view.write_html(tmp_html_path)
+                elif hasattr(view, 'data'):
+                    with open(tmp_html_path, 'w', encoding='utf-8') as f:
+                        f.write(view.data)
+                else:
+                    with open(tmp_html_path, 'w', encoding='utf-8') as f:
+                        f.write(str(view))
+                
+                # Use Selenium to take a screenshot
+                driver.get(f"file://{tmp_html_path}")
+                time.sleep(2)  # Wait for Pyvis network to stabilize and render
+                driver.save_screenshot(str(out_png))
+                
+                # Cleanup temp HTML
+                try:
+                    os.unlink(tmp_html_path)
+                except OSError:
+                    pass
+                    
+                logging.debug(f"Saved ProLif visualization: {out_png}")
+            except Exception as e:
+                logging.error(f"Failed to generate ProLif visualization for {protein_pocket_base}_{ligand}: {e}")
+                
+        log_step(None, f"ProLif visualizations saved to {vis_dir}", color="white")
+    finally:
+        driver.quit()
