@@ -40,6 +40,13 @@ def rank_complexes(output_dir, known_ligands=None):
             complex_name = log_file.stem
             if complex_name.endswith("_vina"):
                 complex_name = complex_name[:-5]
+                
+            run_index = "1"
+            for part in log_file.parts:
+                run_match = re.match(r'^run_(\d+)$', part)
+                if run_match:
+                    run_index = run_match.group(1)
+                    break
             
             protein_pocket = complex_name
             ligand = "N/A"
@@ -61,7 +68,7 @@ def rank_complexes(output_dir, known_ligands=None):
                     protein = match.group(1)
                     pocket = match.group(2)
                     ligand = match.group(3)
-                    results.append((protein, pocket, ligand, energy))
+                    results.append((protein, pocket, ligand, run_index, energy))
                     continue
                 else:
                     # Fallback: split by first underscore
@@ -71,7 +78,7 @@ def rank_complexes(output_dir, known_ligands=None):
                     else:
                         protein, ligand = complex_name, "N/A"
                     pocket = "N/A"
-                    results.append((protein, pocket, ligand, energy))
+                    results.append((protein, pocket, ligand, run_index, energy))
                     continue
 
             # If we successfully extracted protein_pocket and ligand using known_ligands
@@ -83,63 +90,62 @@ def rank_complexes(output_dir, known_ligands=None):
                 protein = protein_pocket
                 pocket = "N/A"
                 
-            results.append((protein, pocket, ligand, energy))
+            results.append((protein, pocket, ligand, run_index, energy))
             
     # Sort by free energy (lowest/most negative first)
-    results.sort(key=lambda x: x[3])
+    results.sort(key=lambda x: x[4])
     return results
 
 def print_ranking(results, output_csv=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
-        return
+        return []
         
+    best_dict = {}
+    for protein, pocket, ligand, run, energy in results:
+        if "_isomer_" in ligand:
+            base_ligand = ligand.split("_isomer_")[0]
+        else:
+            base_ligand = ligand
+            
+        key = (protein, pocket, base_ligand)
+        # Keep the one with the lowest energy
+        if key not in best_dict or energy < best_dict[key][4]:
+            best_dict[key] = (protein, pocket, ligand, run, energy)
+            
+    curated_results = list(best_dict.values())
+    curated_results.sort(key=lambda x: x[4])  # Sort by energy
+
     print()
-    display_limit = 20
-    log_step(None, f"--- Top {min(display_limit, len(results))} Ranking of Complexes by Free Energy (Total: {len(results)}) ---", color="magenta")
-    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'Ligand':<25} | {'Affinity (kcal/mol)':<20}", color="magenta")
-    log_step(None, "-" * 79, color="magenta")
-    for protein, pocket, ligand, energy in results[:display_limit]:
-        log_step(None, f"{protein:<15} | {pocket:<10} | {ligand:<25} | {energy:<20.2f}", color="magenta")
+    display_limit = 10
+    log_step(None, f"--- Top {min(display_limit, len(curated_results))} Curated Best Complexes by Free Energy (Total: {len(curated_results)}) ---", color="magenta")
+    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'Ligand':<25} | {'Run':<5} | {'Affinity (kcal/mol)':<20}", color="magenta")
+    log_step(None, "-" * 87, color="magenta")
+    for protein, pocket, ligand, run, energy in curated_results[:display_limit]:
+        log_step(None, f"{protein:<15} | {pocket:<10} | {ligand:<25} | {run:<5} | {energy:<20.2f}", color="magenta")
 
     if output_csv:
         try:
             with open(output_csv, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Protein', 'Pocket ID', 'Ligand', 'Affinity (kcal/mol)'])
-                for protein, pocket, ligand, energy in results:
-                    writer.writerow([protein, pocket, ligand, energy])
+                writer.writerow(['Protein', 'Pocket ID', 'Ligand', 'Run', 'Affinity (kcal/mol)'])
+                for protein, pocket, ligand, run, energy in results:
+                    writer.writerow([protein, pocket, ligand, run, energy])
             print()
-            log_step(None, f"Ranking saved to {output_csv}", color="magenta")
+            log_step(None, f"Raw ranking saved to {output_csv}", color="magenta")
             
-            # Check for isomers and create a best isomers ranking
-            has_isomers = any("_isomer_" in ligand for _, _, ligand, _ in results)
-            if has_isomers:
-                best_isomers = {}
-                for protein, pocket, ligand, energy in results:
-                    if "_isomer_" in ligand:
-                        base_ligand = ligand.split("_isomer_")[0]
-                    else:
-                        base_ligand = ligand
-                        
-                    key = (protein, pocket, base_ligand)
-                    # Keep the one with the lowest energy
-                    if key not in best_isomers or energy < best_isomers[key][2]:
-                        best_isomers[key] = (ligand, energy)
-                        
-                best_results = [(p, pock, data[0], data[1]) for (p, pock, _), data in best_isomers.items()]
-                best_results.sort(key=lambda x: x[3])  # Sort by energy
-                
-                best_csv = Path(output_csv).with_name(f"best_isomers_{Path(output_csv).name}")
-                with open(best_csv, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['Protein', 'Pocket ID', 'Best_Isomer_Ligand', 'Affinity (kcal/mol)'])
-                    for protein, pocket, ligand, energy in best_results:
-                        writer.writerow([protein, pocket, ligand, energy])
-                log_step(None, f"Best isomers ranking saved to {best_csv}", color="magenta")
+            best_csv = Path(output_csv).with_name(f"curated_best_{Path(output_csv).name}")
+            with open(best_csv, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Protein', 'Pocket ID', 'Best_Ligand', 'Run', 'Affinity (kcal/mol)'])
+                for protein, pocket, ligand, run, energy in curated_results:
+                    writer.writerow([protein, pocket, ligand, run, energy])
+            log_step(None, f"Curated best ranking saved to {best_csv}", color="magenta")
                 
         except Exception as e:
             logging.error(f"Error saving to CSV: {e}")
+
+    return curated_results
 
 def _convert_to_pdb(input_file, in_format, output_file, extra_args=None):
     import subprocess
@@ -279,13 +285,13 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
     log_step(None, f"Generating PDB complex files for top {min(display_limit, len(results))} results...", color="white")
     
     complex_chain_mappings = {}
-    for protein, pocket, ligand, energy in results[:display_limit]:
+    for protein, pocket, ligand, run, energy in results[:display_limit]:
         protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
         
         # Paths
         protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
         
-        ligand_sdf = Path(output_dir) / "vina_output" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
+        ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
         
         complex_pdb = vis_dir / f"{protein_pocket_base}_{ligand}_complex.pdb"
         

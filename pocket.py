@@ -426,7 +426,7 @@ def calculate_volume_and_exhaustiveness(box_params):
     Calculates grid box volume and determines Vina exhaustiveness scaling.
     """
     volume = box_params['size_x'] * box_params['size_y'] * box_params['size_z']
-    exhaustiveness = 32 if volume <= 27000 else 64
+    exhaustiveness = 8 if volume <= 27000 else 16
     return volume, exhaustiveness
 
 def write_vina_box_file(protein_file, box_path, box_params, exhaustiveness, suffix=""):

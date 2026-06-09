@@ -35,6 +35,7 @@ def parse_args(args=None):
     parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water (default: keep cofactors, only delete water)")
     parser.add_argument("--generate_isomers", action="store_true", help="Generate acid-base and tautomer isomers during ligand preparation (default is to skip)")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
+    parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -60,10 +61,10 @@ def setup_logging(output_dir):
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
 
-def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path):
+def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_runs=3):
     """
     Generator that creates valid combinations of protein, ligand, and box files.
-    Yields: (protein_base, ligand_base, box_file)
+    Yields: (protein_base, ligand_base, box_file, run_index)
     """
     if not prepared_proteins:
         logging.error(f"No prepared proteins found.")
@@ -77,9 +78,10 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path):
 
         for box_file in box_files:
             for ligand_base in prepared_ligands:
-                yield protein_base, ligand_base, box_file
+                for run_index in range(1, num_runs + 1):
+                    yield protein_base, ligand_base, box_file, run_index
 
-def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, cpus):
+def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, run_index, cpus):
     """Runs the docking pipeline for a single pair (already prepared)."""
     try:
         out_pdbqt = Path(output_dir) / f"{protein_base}_{ligand_base}_vina_out.pdbqt"
@@ -253,7 +255,7 @@ def main():
         logging.error("Error: Box directory does not exist after pocket identification.")
         return
 
-    jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_path))
+    jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, args.num_runs))
     total_jobs = len(jobs_list)
     error_jobs = []
     step_start = time.time()
@@ -271,13 +273,13 @@ def main():
         expand=True
     ) as progress:
         docking_task = progress.add_task("[cyan]Starting docking...", total=total_jobs)
-        for i, (protein_base, ligand_base, box_file) in enumerate(jobs_list, 1):
+        for i, (protein_base, ligand_base, box_file, run_index) in enumerate(jobs_list, 1):
             try:
                 protein_pocket_base = box_file.name.replace(".box.txt", "")
-                progress.update(docking_task, description=f"[cyan]Docking [bold]{protein_pocket_base}[/bold] & [bold]{ligand_base}[/bold] ({i}/{total_jobs})")
-                logging.debug(f"\n--- Docking {ligand_base} to {protein_pocket_base} ---")
+                progress.update(docking_task, description=f"[cyan]Docking [bold]{protein_pocket_base}[/bold] & [bold]{ligand_base}[/bold] Run {run_index} ({i}/{total_jobs})")
+                logging.debug(f"\n--- Docking {ligand_base} to {protein_pocket_base} (Run {run_index}) ---")
                 
-                vina_out_dir = Path(args.output_dir) / "vina_output"
+                vina_out_dir = Path(args.output_dir) / "vina_output" / f"run_{run_index}"
                 complex_output_dir = vina_out_dir / f"{protein_pocket_base}_{ligand_base}"
                 os.makedirs(complex_output_dir, exist_ok=True)
         
@@ -294,7 +296,7 @@ def main():
                     
                 if not box_file.exists():
                     logging.warning(f"Error: Box file {box_file.name} not found. Skipping docking...")
-                    error_jobs.append(f"{protein_base}\t{ligand_base}\tMissing Box File")
+                    error_jobs.append(f"{protein_base}\t{ligand_base}\tRun {run_index}\tMissing Box File")
                     continue
                     
                 protein_pdbqt = prepared_proteins.get(protein_base)
@@ -302,22 +304,22 @@ def main():
                 
                 if not protein_pdbqt or not ligand_pdbqt:
                     logging.error(f"Error: Missing prepared files for {protein_base} or {ligand_base}. Skipping...")
-                    error_jobs.append(f"{protein_base}\t{ligand_base}\tPreparation Failed")
+                    error_jobs.append(f"{protein_base}\t{ligand_base}\tRun {run_index}\tPreparation Failed")
                     continue
                     
                 success = run_docking_pipeline(
                     protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
-                    protein_pocket_base, ligand_base, args.cpus
+                    protein_pocket_base, ligand_base, run_index, args.cpus
                 )
                 if not success:
-                    error_jobs.append(f"{protein_base}\t{ligand_base}\tDocking Failed")
+                    error_jobs.append(f"{protein_base}\t{ligand_base}\tRun {run_index}\tDocking Failed")
             finally:
                 progress.advance(docking_task)
 
     if error_jobs:
         error_file = Path(args.output_dir) / "error_complexes.txt"
         with open(error_file, "w") as ef:
-            ef.write("Protein\tLigand\tError_Type\n")
+            ef.write("Protein\tLigand\tRun\tError_Type\n")
             ef.write("\n".join(error_jobs) + "\n")
         logging.warning(f"\nRecorded {len(error_jobs)} failed docking jobs in {error_file}")
 
@@ -328,10 +330,13 @@ def main():
     print()
     log_step("WORKFLOW", "Docking complete. Generating ranking...")
     results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
-    print_ranking(results, Path(args.output_dir) / "ranking.csv")
+    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv")
     
     log_step("WORKFLOW", "Generating complex files for top results...")
-    generate_complexes(results, args.output_dir, protein_clean_dir, display_limit=20)
+    if curated_results:
+        generate_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=20)
+    else:
+        logging.warning("No valid curated results to generate complexes from.")
     
     log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 
