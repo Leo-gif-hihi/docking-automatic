@@ -452,7 +452,8 @@ def visualize_prolif_complexes(results, output_dir, protein_clean_dir, display_l
                 pose_iterable = plf.sdf_supplier(str(ligand_sdf))
 
                 # 3. Fingerprint Generation
-                fp = plf.Fingerprint()
+                all_interactions = plf.Fingerprint.list_available()
+                fp = plf.Fingerprint(all_interactions)
                 fp.run_from_iterable(pose_iterable, protein_mol, progress=False)
 
                 # 4. Visualization (Target Pose 0)
