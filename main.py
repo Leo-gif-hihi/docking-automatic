@@ -9,7 +9,7 @@ from rich.logging import RichHandler
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from logger_utils import log_step, console
 
-from rank import rank_complexes, print_ranking, generate_complexes, visualize_prolif_complexes
+from rank import rank_complexes, print_ranking, generate_complexes, visualize_prolif_results
 
 from pocket import process_pockets
 
@@ -337,7 +337,7 @@ def main():
         generate_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=20)
         
         # New: Generate ProLif visualization
-        visualize_prolif_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=20)
+        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=20)
     else:
         logging.warning("No valid curated results to generate complexes from.")
     

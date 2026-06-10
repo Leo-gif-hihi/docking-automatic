@@ -96,6 +96,110 @@ def rank_complexes(output_dir, known_ligands=None):
     results.sort(key=lambda x: x[4])
     return results
 
+def _get_base_ligand(ligand):
+    """Extracts the base ligand name, ignoring isomer suffixes."""
+    return ligand.split("_isomer_")[0] if "_isomer_" in ligand else ligand
+
+def _load_cid_to_name(ligand_path=None):
+    """Loads a mapping of CID to compound names from PubChem_compound_summary_list.csv."""
+    import csv
+    from pathlib import Path
+    import logging
+    
+    cid_to_name = {}
+    summary_csv_path = Path(ligand_path if ligand_path else "ligand-test") / "PubChem_compound_summary_list.csv"
+    if summary_csv_path.exists():
+        try:
+            with open(summary_csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if "Compound_CID" in row and "Name" in row:
+                        cid_to_name[row["Compound_CID"]] = row["Name"]
+        except Exception as e:
+            logging.warning(f"Failed to read summary CSV: {e}")
+    return cid_to_name
+
+from contextlib import contextmanager
+
+@contextmanager
+def _prepare_prolif_protein(protein_cif):
+    """Context manager to convert CIF to PDB and yield a ProLIF Molecule."""
+    import tempfile
+    import os
+    from pathlib import Path
+    import MDAnalysis as mda
+    import prolif as plf
+    
+    with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp_pdb:
+        tmp_prot_pdb = Path(tmp_pdb.name)
+        
+    try:
+        _convert_to_pdb(protein_cif, "cif", tmp_prot_pdb)
+        u = mda.Universe(str(tmp_prot_pdb))
+        protein_mol = plf.Molecule.from_mda(u)
+        yield protein_mol
+    finally:
+        try:
+            os.unlink(tmp_prot_pdb)
+        except OSError:
+            pass
+
+def _generate_network_plot(fp, pose, driver, out_png):
+    """Generates a 2D ProLIF interaction network and saves a screenshot using Selenium."""
+    import tempfile
+    import os
+    import time
+    import logging
+    
+    view = fp.plot_lignetwork(pose, kind="frame", frame=0)
+    
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp_html:
+        tmp_html_path = tmp_html.name
+        
+    try:
+        if hasattr(view, 'save'):
+            view.save(tmp_html_path)
+        elif hasattr(view, 'write_html'):
+            view.write_html(tmp_html_path)
+        elif hasattr(view, 'data'):
+            with open(tmp_html_path, 'w', encoding='utf-8') as f:
+                f.write(view.data)
+        else:
+            with open(tmp_html_path, 'w', encoding='utf-8') as f:
+                f.write(str(view))
+        
+        driver.get(f"file://{tmp_html_path}")
+        time.sleep(2)
+        driver.save_screenshot(str(out_png))
+        logging.debug(f"Saved ProLif visualization: {out_png}")
+    finally:
+        try:
+            os.unlink(tmp_html_path)
+        except OSError:
+            pass
+
+def _generate_barcode_plot(df_combined, pdf_path, tiff_path, protein_pocket_base):
+    """Generates a Barcode plot from a combined DataFrame."""
+    import matplotlib.pyplot as plt
+    from prolif.plotting.barcode import Barcode
+    from logger_utils import log_step
+    
+    sorted_columns = df_combined.sum().sort_values(ascending=False).index
+    df_sorted = df_combined[sorted_columns]
+
+    ax = Barcode(df_sorted).display(
+        figsize=(10, min(8, max(4, len(sorted_columns) * 0.3))),
+        dpi=300,
+        xlabel="Compound"
+    )
+    
+    fig = ax.figure
+    fig.savefig(str(pdf_path), format="pdf", bbox_inches="tight")
+    fig.savefig(str(tiff_path), format="tiff", dpi=600, bbox_inches="tight")
+    plt.close(fig)
+    
+    log_step(None, f"Saved barcode for {protein_pocket_base}", color="white")
+
 def print_ranking(results, output_csv=None, ligand_path=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
@@ -103,10 +207,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
         
     best_dict = {}
     for protein, pocket, ligand, run, energy in results:
-        if "_isomer_" in ligand:
-            base_ligand = ligand.split("_isomer_")[0]
-        else:
-            base_ligand = ligand
+        base_ligand = _get_base_ligand(ligand)
             
         key = (protein, pocket, base_ligand)
         # Keep the one with the lowest energy
@@ -117,21 +218,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
     curated_results.sort(key=lambda x: x[4])  # Sort by energy
 
     # Load CID to Name mapping
-    cid_to_name = {}
-    if ligand_path:
-        summary_csv_path = Path(ligand_path) / "PubChem_compound_summary_list.csv"
-    else:
-        summary_csv_path = Path("ligand-test/PubChem_compound_summary_list.csv")
-        
-    if summary_csv_path.exists():
-        try:
-            with open(summary_csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if "Compound_CID" in row and "Name" in row:
-                        cid_to_name[row["Compound_CID"]] = row["Name"]
-        except Exception as e:
-            logging.warning(f"Failed to read summary CSV: {e}")
+    cid_to_name = _load_cid_to_name(ligand_path)
 
     import statistics
 
@@ -144,12 +231,11 @@ def print_ranking(results, output_csv=None, ligand_path=None):
 
     def format_row(row, is_curated=False):
         protein, pocket, ligand, run, energy = row
+        cid = _get_base_ligand(ligand)
         if "_isomer_" in ligand:
             parts = ligand.split("_isomer_")
-            cid = parts[0]
             isomer = parts[1] if len(parts) > 1 else ""
         else:
-            cid = ligand
             isomer = "N/A"
         ligand_name = cid_to_name.get(cid, "N/A")
         
@@ -414,30 +500,29 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
             
     log_step(None, f"Complexes saved to {vis_dir}", color="white")
 
-def visualize_prolif_complexes(results, output_dir, protein_clean_dir, display_limit=20):
+def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path=None, display_limit=20):
     if not results:
         return
         
     import os
     import logging
+    import pandas as pd
+    import matplotlib.pyplot as plt
     from pathlib import Path
-    import tempfile
-    import time
     from logger_utils import log_step
     import warnings
     import sys
     
-    # Aggressively ignore all warnings during the visualization
     warnings.simplefilter("ignore")
     os.environ["PYTHONWARNINGS"] = "ignore"
     
-    # Ultimate silence: redirect stderr to /dev/null during imports
     devnull = open(os.devnull, 'w')
     old_stderr = sys.stderr
     sys.stderr = devnull
     try:
         import MDAnalysis as mda
         import prolif as plf
+        from prolif.plotting.barcode import Barcode
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
     except ImportError as e:
@@ -469,82 +554,97 @@ def visualize_prolif_complexes(results, output_dir, protein_clean_dir, display_l
         log_step(None, "Skipping ProLif visualization because Selenium Chrome driver could not be initialized.", color="yellow")
         return
 
+    # Map CIDs to standard names
+    cid_to_name = _load_cid_to_name(ligand_path)
+
+    # Set publication typography globally
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+        'font.size': 12,
+        'axes.labelsize': 14,
+        'xtick.labelsize': 12,
+        'ytick.labelsize': 10,
+        'legend.fontsize': 10
+    })
+    Barcode.COLORS["Hydrophobic"] = "#4477AA"
+    Barcode.COLORS["HBAcceptor"] = "#EE6677"
+    Barcode.COLORS["HBDonor"] = "#228833"
+    Barcode.COLORS["PiStacking"] = "#CCBB44"
+
+    # Group results by Protein and Pocket
+    targets = {}
+    for row in results[:display_limit]:
+        protein, pocket, ligand, run, energy = row
+        key = (protein, pocket)
+        if key not in targets:
+            targets[key] = []
+        targets[key].append(row)
+
     try:
-        for protein, pocket, ligand, run, energy in results[:display_limit]:
+        all_interactions = plf.Fingerprint.list_available()
+        for (protein, pocket), target_results in targets.items():
             protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
-            
-            # Load the FH.cif file
             protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
-            ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
-            
-            out_png = vis_dir / f"{protein_pocket_base}_{ligand}_prolif.png"
             
             if not protein_cif.exists():
-                logging.warning(f"Protein file missing: {protein_cif}. Skipping ProLif.")
+                logging.warning(f"Missing {protein_cif}. Skipping visualization for {protein_pocket_base}.")
                 continue
-                
-            if not ligand_sdf.exists():
-                logging.warning(f"Ligand SDF file missing: {ligand_sdf}. Skipping ProLif.")
-                continue
+
+            fp_dataframes = []
+            ligand_labels = []
 
             try:
-                # 1. Protein Preparation (Convert CIF to PDB for MDAnalysis)
-                with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp_pdb:
-                    tmp_prot_pdb = Path(tmp_pdb.name)
-                
-                try:
-                    # _convert_to_pdb is defined earlier in rank.py
-                    _convert_to_pdb(protein_cif, "cif", tmp_prot_pdb)
-                    u = mda.Universe(str(tmp_prot_pdb))
-                    protein_mol = plf.Molecule.from_mda(u)
-                finally:
-                    try:
-                        os.unlink(tmp_prot_pdb)
-                    except OSError:
-                        pass
+                with _prepare_prolif_protein(protein_cif) as protein_mol:
+                    for row in target_results:
+                        _, _, ligand, run, _ = row
+                        ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
+                        
+                        if not ligand_sdf.exists():
+                            continue
 
-                # 2. Docking Poses Preparation
-                pose_iterable = plf.sdf_supplier(str(ligand_sdf))
-
-                # 3. Fingerprint Generation
-                all_interactions = plf.Fingerprint.list_available()
-                fp = plf.Fingerprint(all_interactions)
-                fp.run_from_iterable(pose_iterable, protein_mol, progress=False)
-
-                # 4. Visualization (Target Pose 0)
-                pose_index = 0
-                view = fp.plot_lignetwork(pose_iterable[pose_index], kind="frame", frame=pose_index)
-                
-                with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp_html:
-                    tmp_html_path = tmp_html.name
-                    
-                # Save Pyvis/HTML output
-                if hasattr(view, 'save'):
-                    view.save(tmp_html_path)
-                elif hasattr(view, 'write_html'):
-                    view.write_html(tmp_html_path)
-                elif hasattr(view, 'data'):
-                    with open(tmp_html_path, 'w', encoding='utf-8') as f:
-                        f.write(view.data)
-                else:
-                    with open(tmp_html_path, 'w', encoding='utf-8') as f:
-                        f.write(str(view))
-                
-                # Use Selenium to take a screenshot
-                driver.get(f"file://{tmp_html_path}")
-                time.sleep(2)  # Wait for Pyvis network to stabilize and render
-                driver.save_screenshot(str(out_png))
-                
-                # Cleanup temp HTML
-                try:
-                    os.unlink(tmp_html_path)
-                except OSError:
-                    pass
-                    
-                logging.debug(f"Saved ProLif visualization: {out_png}")
+                        base_ligand = _get_base_ligand(ligand)
+                        label = cid_to_name.get(base_ligand, base_ligand)
+                        
+                        poses = list(plf.sdf_supplier(str(ligand_sdf)))
+                        if not poses:
+                            continue
+                            
+                        fp = plf.Fingerprint(all_interactions)
+                        fp.run_from_iterable([poses[0]], protein_mol, progress=False)
+                        
+                        # Generate 2D network screenshot
+                        out_png = vis_dir / f"{protein_pocket_base}_{ligand}_prolif.png"
+                        try:
+                            _generate_network_plot(fp, poses[0], driver, out_png)
+                        except Exception as e:
+                            logging.error(f"Failed to generate network plot for {protein_pocket_base}_{ligand}: {e}")
+                        
+                        df_i = fp.to_dataframe()
+                        
+                        if 'ligand' in df_i.columns.names:
+                            idx = df_i.columns.names.index('ligand')
+                            new_tuples = [tuple('LIG' if i == idx else val for i, val in enumerate(tup)) for tup in df_i.columns]
+                            df_i.columns = pd.MultiIndex.from_tuples(new_tuples, names=df_i.columns.names)
+                            
+                        fp_dataframes.append(df_i)
+                        ligand_labels.append(label)
+                        
             except Exception as e:
-                logging.error(f"Failed to generate ProLif visualization for {protein_pocket_base}_{ligand}: {e}")
+                logging.error(f"Failed to process protein {protein} or its ligands for ProLif visualization: {e}")
+                continue
+
+            if fp_dataframes:
+                df_combined = pd.concat(fp_dataframes, ignore_index=True).fillna(False)
+                df_combined.index = ligand_labels
                 
-        log_step(None, f"ProLif visualizations saved to {vis_dir}", color="white")
+                pdf_path = vis_dir / f"{protein_pocket_base}_barcode.pdf"
+                tiff_path = vis_dir / f"{protein_pocket_base}_barcode.tiff"
+                try:
+                    _generate_barcode_plot(df_combined, pdf_path, tiff_path, protein_pocket_base)
+                except Exception as e:
+                    logging.error(f"Failed to generate barcode plot for {protein_pocket_base}: {e}")
+
+        log_step(None, f"All ProLif visualizations saved to {vis_dir}", color="magenta")
     finally:
         driver.quit()
