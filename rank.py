@@ -137,9 +137,16 @@ def print_ranking(results, output_csv=None):
             best_csv = Path(output_csv).with_name(f"curated_best_{Path(output_csv).name}")
             with open(best_csv, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Protein', 'Pocket ID', 'Best_Ligand', 'Run', 'Affinity (kcal/mol)'])
+                writer.writerow(['Protein', 'Pocket ID', 'Best_Ligand', 'Isomer', 'Run', 'Affinity (kcal/mol)'])
                 for protein, pocket, ligand, run, energy in curated_results:
-                    writer.writerow([protein, pocket, ligand, run, energy])
+                    if "_isomer_" in ligand:
+                        parts = ligand.split("_isomer_")
+                        base_ligand = parts[0]
+                        isomer = parts[1] if len(parts) > 1 else ""
+                    else:
+                        base_ligand = ligand
+                        isomer = "N/A"
+                    writer.writerow([protein, pocket, base_ligand, isomer, run, energy])
             log_step(None, f"Curated best ranking saved to {best_csv}", color="magenta")
                 
         except Exception as e:
