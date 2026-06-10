@@ -692,12 +692,36 @@ def create_fh_zip_archive(phase1_results, output_dir):
         logging.error(f"Failed to create {zip_path}: {e}")
 
 
+def convert_pdb_to_cif(input_dir):
+    """Converts any .pdb files in the input directory to .cif format."""
+    from prody import parsePDB, writeMMCIF
+    pdb_files_in_dir = glob.glob(os.path.join(input_dir, "*.pdb"))
+    if pdb_files_in_dir:
+        logging.info(f"Found {len(pdb_files_in_dir)} .pdb file(s) in '{input_dir}'. Converting to .cif format...")
+        for pdb_path in pdb_files_in_dir:
+            try:
+                base_name = os.path.splitext(os.path.basename(pdb_path))[0]
+                cif_out_path = os.path.join(input_dir, f"{base_name}.cif")
+                if not os.path.exists(cif_out_path):
+                    logging.debug(f"Parsing {pdb_path}...")
+                    struct = parsePDB(pdb_path)
+                    if struct is not None:
+                        writeMMCIF(cif_out_path, struct)
+                        logging.debug(f"Converted {pdb_path} to {cif_out_path}")
+                    else:
+                        logging.warning(f"Failed to parse {pdb_path}")
+            except Exception as e:
+                logging.error(f"Error converting {pdb_path} to CIF: {e}")
+
 def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False):
     """Main workflow to orchestrate the cleaning process."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         logging.debug(f"Created output directory: {output_dir}")
     
+    # Check for PDB files and convert them to CIF first
+    convert_pdb_to_cif(input_dir)
+
     pdb_files = glob.glob(os.path.join(input_dir, "*.cif"))
         
     if not pdb_files:
