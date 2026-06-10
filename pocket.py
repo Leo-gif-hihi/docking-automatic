@@ -317,9 +317,10 @@ def extract_active_coordinates(cif_file, active_residues):
                     if 'CA' in res:
                         # Extract the Alpha-Carbon 3D coordinate vector
                         coord = res['CA'].get_coord()
+                        resname = res.get_resname().strip().capitalize()
                         coords.append(coord)
                         scores.append(active_residues[(cid, resseq)])
-                        residue_ids.append((cid, resseq))
+                        residue_ids.append((cid, resseq, resname))
         break # Only process the first model
         
     return np.array(coords), np.array(scores), residue_ids
@@ -579,7 +580,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     out_path.mkdir(exist_ok=True, parents=True)
     reliability_file = out_path / "pocket_reliability.csv"
     with open(reliability_file, 'w', encoding='utf-8') as f:
-        f.write("protein_name,pocket_id,pocket_score,ligands\n")
+        f.write("protein_name,pocket_id,pocket_score,ligands,interactive_residues\n")
 
     global_pocket_counter = 1
 
@@ -697,14 +698,18 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                         
                         # Collect ligands for this cluster
                         cluster_ligands = set()
-                        for cid, resseq in best_residues:
+                        cluster_residues_formatted = []
+                        for cid, resseq, resname in best_residues:
                             cluster_ligands.update(residue_ligands[(cid, resseq)])
-                        ligands_str = ";".join(sorted(cluster_ligands))
+                            cluster_residues_formatted.append(f"{resname}{resseq}")
+                        
+                        ligands_str = ", ".join(sorted(cluster_ligands))
+                        residues_str = ", ".join(cluster_residues_formatted)
                         
                         disp_protein_name = protein_file.name if idx == 0 else ""
                         pocket_id = global_pocket_counter
                         global_pocket_counter += 1
-                        rf.write(f"{disp_protein_name},{pocket_id},{best_score},{ligands_str}\n")
+                        rf.write(f'{disp_protein_name},{pocket_id},{best_score},"{ligands_str}","{residues_str}"\n')
 
                         logging.debug(f"Cluster {idx+1} Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
                         
