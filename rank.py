@@ -133,7 +133,16 @@ def print_ranking(results, output_csv=None, ligand_path=None):
         except Exception as e:
             logging.warning(f"Failed to read summary CSV: {e}")
 
-    def format_row(row):
+    import statistics
+
+    energies_dict = {}
+    for protein, pocket, ligand, run, energy in results:
+        key = (protein, pocket, ligand)
+        if key not in energies_dict:
+            energies_dict[key] = []
+        energies_dict[key].append(energy)
+
+    def format_row(row, is_curated=False):
         protein, pocket, ligand, run, energy = row
         if "_isomer_" in ligand:
             parts = ligand.split("_isomer_")
@@ -143,26 +152,40 @@ def print_ranking(results, output_csv=None, ligand_path=None):
             cid = ligand
             isomer = "N/A"
         ligand_name = cid_to_name.get(cid, "N/A")
-        return [protein, pocket, cid, ligand_name, isomer, run, energy]
+        
+        base_res = [protein, pocket, cid, ligand_name, isomer, run, energy]
+        if is_curated:
+            key = (protein, pocket, ligand)
+            energies = energies_dict.get(key, [energy])
+            mean_e = statistics.mean(energies)
+            if len(energies) > 1:
+                sd_e = statistics.stdev(energies)
+                mean_sd_str = f"{mean_e:.2f} +- {sd_e:.2f}"
+            else:
+                mean_sd_str = f"{mean_e:.2f} +- N/A"
+            base_res.append(mean_sd_str)
+        return base_res
 
-    header = ['Protein', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
-    formatted_results = [format_row(row) for row in results]
-    formatted_curated = [format_row(row) for row in curated_results]
+    header_raw = ['Protein', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
+    header_curated = header_raw + ['Mean+-SD (kcal/mol)']
+
+    formatted_results = [format_row(row, is_curated=False) for row in results]
+    formatted_curated = [format_row(row, is_curated=True) for row in curated_results]
 
     print()
     display_limit = 10
     log_step(None, f"--- Top {min(display_limit, len(formatted_curated))} Curated Best Complexes by Free Energy (Total: {len(formatted_curated)}) ---", color="magenta")
-    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20}", color="magenta")
-    log_step(None, "-" * 69, color="magenta")
+    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20} | {'Mean+-SD (kcal/mol)':<20}", color="magenta")
+    log_step(None, "-" * 92, color="magenta")
     for row in formatted_curated[:display_limit]:
-        protein, pocket, cid, lname, iso, run, energy = row
-        log_step(None, f"{protein:<15} | {pocket:<10} | {cid:<15} | {energy:<20.2f}", color="magenta")
+        protein, pocket, cid, lname, iso, run, energy, mean_sd = row
+        log_step(None, f"{protein:<15} | {pocket:<10} | {cid:<15} | {energy:<20.2f} | {mean_sd:<20}", color="magenta")
 
     if output_csv:
         try:
             with open(output_csv, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(header)
+                writer.writerow(header_raw)
                 writer.writerows(formatted_results)
             print()
             log_step(None, f"Raw ranking saved to {output_csv}", color="magenta")
@@ -170,7 +193,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
             best_csv = Path(output_csv).with_name(f"curated_best_{Path(output_csv).name}")
             with open(best_csv, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(header)
+                writer.writerow(header_curated)
                 writer.writerows(formatted_curated)
             log_step(None, f"Curated best ranking saved to {best_csv}", color="magenta")
                 

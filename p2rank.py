@@ -127,7 +127,7 @@ def create_box_from_predictions(p2rank_out_dir, proteins, box_dir, prepared_dir,
                             bf.write(f"size_x = {size:.3f}\n")
                             bf.write(f"size_y = {size:.3f}\n")
                             bf.write(f"size_z = {size:.3f}\n")
-                            bf.write(f"exhaustiveness = 32\n") # Default for size=30^3
+                            bf.write(f"exhaustiveness = 8\n") # Default for size=30^3
                         
                         logging.debug(f"Created box file for {protein} at {box_filename}")
                         
