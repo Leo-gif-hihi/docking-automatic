@@ -628,6 +628,10 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
 
     try:
         all_interactions = plf.Fingerprint.list_available()
+        
+        excel_data_rows = []
+        complex_no = 1
+        
         for (protein, pocket), target_results in targets.items():
             protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
             protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
@@ -645,7 +649,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
             try:
                 with _prepare_prolif_protein(protein_cif) as protein_mol:
                     for row in target_results:
-                        _, _, ligand, run, _ = row
+                        _, _, ligand, run, energy = row
                         ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
                         
                         if not ligand_sdf.exists():
@@ -682,6 +686,44 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                 
                             fp_dfs.append(df)
                             lig_labels.append(label)
+
+                            if v_name == "all":
+                                interaction_groups = {}
+                                if not df.empty:
+                                    row_data = df.iloc[0]
+                                    for col, val in row_data.items():
+                                        if val > 0:
+                                            lig_res, prot_res, interaction = col
+                                            if interaction not in interaction_groups:
+                                                interaction_groups[interaction] = []
+                                            interaction_groups[interaction].append(f"{prot_res} ({int(val)})")
+                                
+                                formatted_ligand = label
+                                energy_str = f"{energy:.3f}".replace('.', ',')
+                                
+                                if not interaction_groups:
+                                    excel_data_rows.append({
+                                        'complex_id': complex_no,
+                                        'No': complex_no,
+                                        'Protein': protein_pocket_base,
+                                        'Ligand': formatted_ligand,
+                                        'Docking score (kcal/mol)': energy_str,
+                                        'Interaction': "None",
+                                        'Amino Acid (number of interaction)': "None"
+                                    })
+                                else:
+                                    for interaction, amino_acids in interaction_groups.items():
+                                        for aa in amino_acids:
+                                            excel_data_rows.append({
+                                                'complex_id': complex_no,
+                                                'No': complex_no,
+                                                'Protein': protein_pocket_base,
+                                                'Ligand': formatted_ligand,
+                                                'Docking score (kcal/mol)': energy_str,
+                                                'Interaction': interaction,
+                                                'Amino Acid (number of interaction)': aa
+                                            })
+                                complex_no += 1
                         
             except Exception as e:
                 logging.error(f"Failed to process protein {protein} or its ligands for ProLif visualization: {e}")
@@ -710,6 +752,93 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                         except Exception as e:
                             logging.error(f"Failed to generate {version} barcode plot for {protein_pocket_base}: {e}")
 
+        # Generate Excel report
+        if excel_data_rows:
+            _generate_excel_summary(excel_data_rows, vis_dir)
+
         log_step(None, f"All ProLif visualizations saved to {vis_dir}", color="magenta")
     finally:
         driver.quit()
+
+def _generate_excel_summary(excel_data_rows, vis_dir):
+    import logging
+    import pandas as pd
+    from logger_utils import log_step
+    
+    try:
+        import openpyxl
+        from openpyxl.styles import Alignment, Font, Border, Side
+        
+        excel_df = pd.DataFrame(excel_data_rows)
+        excel_path = vis_dir / "prolif_interactions_summary.xlsx"
+        
+        # Write to Excel
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Interactions"
+        
+        columns = ['No', 'Protein', 'Ligand', 'Docking score (kcal/mol)', 'Interaction', 'Amino Acid (number of interaction)']
+        ws.append(columns)
+        
+        # Style header
+        for col_idx in range(1, len(columns) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        
+        # Write data
+        for idx, row in excel_df.iterrows():
+            ws.append([row[col] for col in columns])
+        
+        # Apply borders and alignment to all cells
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                             top=Side(style='thin'), bottom=Side(style='thin'))
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=len(columns)):
+            for cell in row:
+                cell.border = thin_border
+                if cell.row > 1:
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        
+        # Merge cells
+        def merge_column_by_key(col_letter, key_col_name, merge_by_interaction=False):
+            start_row = 2
+            while start_row <= ws.max_row:
+                key_val = excel_df.iloc[start_row - 2][key_col_name]
+                if merge_by_interaction:
+                    interaction_val = excel_df.iloc[start_row - 2]['Interaction']
+                
+                end_row = start_row
+                while end_row < ws.max_row:
+                    next_key_val = excel_df.iloc[end_row - 1][key_col_name]
+                    if next_key_val != key_val:
+                        break
+                    if merge_by_interaction:
+                        next_interaction_val = excel_df.iloc[end_row - 1]['Interaction']
+                        if next_interaction_val != interaction_val:
+                            break
+                    end_row += 1
+                
+                if end_row > start_row:
+                    ws.merge_cells(f"{col_letter}{start_row}:{col_letter}{end_row}")
+                start_row = end_row + 1
+
+        merge_column_by_key('A', 'complex_id')
+        merge_column_by_key('B', 'complex_id')
+        merge_column_by_key('C', 'complex_id')
+        merge_column_by_key('D', 'complex_id')
+        merge_column_by_key('E', 'complex_id', merge_by_interaction=True)
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 5
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 30
+        ws.column_dimensions['D'].width = 15
+        ws.column_dimensions['E'].width = 20
+        ws.column_dimensions['F'].width = 25
+        
+        wb.save(str(excel_path))
+        log_step(None, f"Excel interaction summary saved to {excel_path}", color="white")
+    except ImportError:
+        logging.warning("openpyxl is not installed. Skipping Excel summary generation. (pip install openpyxl)")
+    except Exception as e:
+        logging.error(f"Failed to generate Excel summary: {e}")
