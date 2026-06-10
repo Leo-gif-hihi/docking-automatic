@@ -96,7 +96,7 @@ def rank_complexes(output_dir, known_ligands=None):
     results.sort(key=lambda x: x[4])
     return results
 
-def print_ranking(results, output_csv=None):
+def print_ranking(results, output_csv=None, ligand_path=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
         return []
@@ -116,37 +116,62 @@ def print_ranking(results, output_csv=None):
     curated_results = list(best_dict.values())
     curated_results.sort(key=lambda x: x[4])  # Sort by energy
 
+    # Load CID to Name mapping
+    cid_to_name = {}
+    if ligand_path:
+        summary_csv_path = Path(ligand_path) / "PubChem_compound_summary_list.csv"
+    else:
+        summary_csv_path = Path("ligand-test/PubChem_compound_summary_list.csv")
+        
+    if summary_csv_path.exists():
+        try:
+            with open(summary_csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if "Compound_CID" in row and "Name" in row:
+                        cid_to_name[row["Compound_CID"]] = row["Name"]
+        except Exception as e:
+            logging.warning(f"Failed to read summary CSV: {e}")
+
+    def format_row(row):
+        protein, pocket, ligand, run, energy = row
+        if "_isomer_" in ligand:
+            parts = ligand.split("_isomer_")
+            cid = parts[0]
+            isomer = parts[1] if len(parts) > 1 else ""
+        else:
+            cid = ligand
+            isomer = "N/A"
+        ligand_name = cid_to_name.get(cid, "N/A")
+        return [protein, pocket, cid, ligand_name, isomer, run, energy]
+
+    header = ['Protein', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
+    formatted_results = [format_row(row) for row in results]
+    formatted_curated = [format_row(row) for row in curated_results]
+
     print()
     display_limit = 10
-    log_step(None, f"--- Top {min(display_limit, len(curated_results))} Curated Best Complexes by Free Energy (Total: {len(curated_results)}) ---", color="magenta")
-    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'Ligand':<25} | {'Run':<5} | {'Affinity (kcal/mol)':<20}", color="magenta")
-    log_step(None, "-" * 87, color="magenta")
-    for protein, pocket, ligand, run, energy in curated_results[:display_limit]:
-        log_step(None, f"{protein:<15} | {pocket:<10} | {ligand:<25} | {run:<5} | {energy:<20.2f}", color="magenta")
+    log_step(None, f"--- Top {min(display_limit, len(formatted_curated))} Curated Best Complexes by Free Energy (Total: {len(formatted_curated)}) ---", color="magenta")
+    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20}", color="magenta")
+    log_step(None, "-" * 69, color="magenta")
+    for row in formatted_curated[:display_limit]:
+        protein, pocket, cid, lname, iso, run, energy = row
+        log_step(None, f"{protein:<15} | {pocket:<10} | {cid:<15} | {energy:<20.2f}", color="magenta")
 
     if output_csv:
         try:
             with open(output_csv, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Protein', 'Pocket ID', 'Ligand', 'Run', 'Affinity (kcal/mol)'])
-                for protein, pocket, ligand, run, energy in results:
-                    writer.writerow([protein, pocket, ligand, run, energy])
+                writer.writerow(header)
+                writer.writerows(formatted_results)
             print()
             log_step(None, f"Raw ranking saved to {output_csv}", color="magenta")
             
             best_csv = Path(output_csv).with_name(f"curated_best_{Path(output_csv).name}")
             with open(best_csv, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Protein', 'Pocket ID', 'Best_Ligand', 'Isomer', 'Run', 'Affinity (kcal/mol)'])
-                for protein, pocket, ligand, run, energy in curated_results:
-                    if "_isomer_" in ligand:
-                        parts = ligand.split("_isomer_")
-                        base_ligand = parts[0]
-                        isomer = parts[1] if len(parts) > 1 else ""
-                    else:
-                        base_ligand = ligand
-                        isomer = "N/A"
-                    writer.writerow([protein, pocket, base_ligand, isomer, run, energy])
+                writer.writerow(header)
+                writer.writerows(formatted_curated)
             log_step(None, f"Curated best ranking saved to {best_csv}", color="magenta")
                 
         except Exception as e:
