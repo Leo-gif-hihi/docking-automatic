@@ -5,6 +5,7 @@ from Bio.PDB import PDBParser, PDBIO, MMCIFParser, MMCIFIO
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from Bio.PDB.Polypeptide import protein_letters_3to1
 from Bio import Align
+from Bio.Align import substitution_matrices
 import requests
 import json
 import numpy as np
@@ -247,10 +248,10 @@ def calculate_sequence_identity(best_alignment):
         
     return (matches / total_length) * 100.0
 
-def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
+def map_binding_residues(best_alignment, binding_residues, pdb_seq_data, scoring_matrix=None):
     """
     Maps BioLiP interacting residues to PDB resseq numbers using the global alignment.
-    Returns a list of valid mapped resseq numbers in the PDB file.
+    Returns a list of tuples (mapped resseq number, substitution score).
     """
     # In Biopython PairwiseAligner, the alignment object behaves like a tuple of strings (with gap characters)
     biolip_aligned = best_alignment[0]
@@ -269,13 +270,13 @@ def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
         if char_p != '-':
             pdb_pos += 1
 
-    mapped_resseqs = []
+    mapped_resseqs_with_scores = []
     
     for res_str in binding_residues:
         if not res_str or len(res_str) < 2:
             continue
             
-        req_aa = res_str[0] # Amino acid 1-letter code
+        req_aa = res_str[0].upper() # Amino acid 1-letter code
         try:
             # BioLiP uses 1-based indexing, convert to 0-based
             req_idx = int(res_str[1:]) - 1
@@ -286,16 +287,26 @@ def map_binding_residues(best_alignment, binding_residues, pdb_seq_data):
         if req_idx in biolip_to_pdb_map:
             mapped_pdb_idx = biolip_to_pdb_map[req_idx]
             pdb_aa, resseq = pdb_seq_data[mapped_pdb_idx]
+            pdb_aa = pdb_aa.upper()
             
             # Validation check for mutation between pure UniProt sequence and PDB crystal homologous chain
             if pdb_aa != req_aa:
                 logging.debug(f"Mutation warning at BioLiP {res_str}: PDB structure has {pdb_aa}. Keeping coordinate.")
             
-            mapped_resseqs.append(resseq)
+            score = 1.0
+            if scoring_matrix is not None:
+                try:
+                    raw_score = float(scoring_matrix[req_aa, pdb_aa])
+                    score = 1.0 if raw_score > 0 else 0.0
+                except Exception as e:
+                    logging.debug(f"Could not score substitution {req_aa} -> {pdb_aa}: {e}. Defaulting to 0.")
+                    score = 0.0
+
+            mapped_resseqs_with_scores.append((resseq, score))
         else:
             logging.debug(f"Missing loop warning: BioLiP residue {res_str} maps to a gap in the PDB structure. Dropping.")
             
-    return mapped_resseqs
+    return mapped_resseqs_with_scores
 
 def extract_active_coordinates(cif_file, active_residues):
     """
@@ -588,6 +599,13 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     if not protein_files:
         logging.error(f"No *FH.cif files found in {protein_path} for pocket identification.")
         return
+        
+    try:
+        scoring_matrix = substitution_matrices.load("BLOSUM80")
+        logging.info("Successfully loaded BLOSUM80 substitution matrix for residue scoring.")
+    except Exception as e:
+        logging.warning(f"Could not load BLOSUM80 matrix: {e}. Falling back to default scoring.")
+        scoring_matrix = None
 
     unprocessed_proteins = []
     total_proteins = len(protein_files)
@@ -658,12 +676,12 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                             logging.debug(f"Sequence identity {identity_pct:.2f}% is not above 80%, skipping...")
                             continue
 
-                        mapped_resseqs = map_binding_residues(best_alignment, entry['binding_residues'], pdb_seq_data)
-                        logging.debug(f"Successfully mapped {len(mapped_resseqs)} valid 3D coordinates for BioLiP Record {i+1}: {mapped_resseqs}")
+                        mapped_resseqs_with_scores = map_binding_residues(best_alignment, entry['binding_residues'], pdb_seq_data, scoring_matrix=scoring_matrix)
+                        logging.debug(f"Successfully mapped {len(mapped_resseqs_with_scores)} valid 3D coordinates for BioLiP Record {i+1}")
                         
                         # Step 7: Aggregation
-                        for resseq in mapped_resseqs:
-                            occurrence_heatmap[(chain_id, resseq)] += 1
+                        for resseq, score in mapped_resseqs_with_scores:
+                            occurrence_heatmap[(chain_id, resseq)] += score
                             if entry.get('ligand'):
                                 residue_ligands[(chain_id, resseq)].add(entry['ligand'])
 
@@ -701,7 +719,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                         cluster_residues_formatted = []
                         for cid, resseq, resname in best_residues:
                             cluster_ligands.update(residue_ligands[(cid, resseq)])
-                            cluster_residues_formatted.append(f"{resname}{resseq}")
+                            cluster_residues_formatted.append(f"{cid}:{resname}{resseq}")
                         
                         ligands_str = ", ".join(sorted(cluster_ligands))
                         residues_str = ", ".join(cluster_residues_formatted)
