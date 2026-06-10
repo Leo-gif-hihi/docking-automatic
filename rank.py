@@ -178,7 +178,7 @@ def _generate_network_plot(fp, pose, driver, out_png):
         except OSError:
             pass
 
-def _generate_barcode_plot(df_combined, pdf_path, tiff_path, protein_pocket_base):
+def _generate_barcode_plot(df_combined, tiff_path, protein_pocket_base):
     """Generates a Barcode plot from a combined DataFrame."""
     import matplotlib.pyplot as plt
     from prolif.plotting.barcode import Barcode
@@ -194,11 +194,54 @@ def _generate_barcode_plot(df_combined, pdf_path, tiff_path, protein_pocket_base
     )
     
     fig = ax.figure
-    fig.savefig(str(pdf_path), format="pdf", bbox_inches="tight")
     fig.savefig(str(tiff_path), format="tiff", dpi=600, bbox_inches="tight")
     plt.close(fig)
     
     log_step(None, f"Saved barcode for {protein_pocket_base}", color="white")
+
+def _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base):
+    """Generates a Heatmap plot from a combined DataFrame."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from logger_utils import log_step
+    
+    if df_combined.empty:
+        log_step(None, f"No data to plot heatmap for {protein_pocket_base}", color="yellow")
+        return
+
+    # Group by interaction type only
+    if df_combined.columns.nlevels == 3:
+        # Level 2 is the interaction type
+        df_grouped = df_combined.groupby(level=2, axis=1).sum()
+    elif df_combined.columns.nlevels == 2:
+        # Level 1 is the interaction type
+        df_grouped = df_combined.groupby(level=1, axis=1).sum()
+    else:
+        df_grouped = df_combined
+        
+    df_plot = df_grouped.T
+    
+    sorted_idx = df_plot.sum(axis=1).sort_values(ascending=False).index
+    df_plot = df_plot.loc[sorted_idx]
+    
+    fig_width = max(10, len(df_plot.columns) * 0.8)
+    fig_height = max(6, len(df_plot.index) * 0.8)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    
+    sns.heatmap(df_plot.astype(float), cmap='YlGnBu', annot=True, fmt='g', 
+                cbar_kws={'label': 'Interaction Count'}, ax=ax)
+    
+    plt.title(f"Interaction Heatmap for {protein_pocket_base}", pad=20)
+    plt.ylabel("")
+    plt.xlabel("")
+    plt.xticks(rotation=0)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    
+    fig.savefig(str(tiff_path), format="tiff", dpi=600, bbox_inches="tight")
+    plt.close(fig)
+    
+    log_step(None, f"Saved heatmap for {protein_pocket_base}", color="white")
 
 def print_ranking(results, output_csv=None, ligand_path=None):
     if not results:
@@ -525,6 +568,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         from prolif.plotting.barcode import Barcode
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
+        import seaborn as sns
     except ImportError as e:
         sys.stderr = old_stderr
         devnull.close()
@@ -536,7 +580,8 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         devnull.close()
 
     vis_dir = Path(output_dir) / "visualization" / "prolif"
-    os.makedirs(vis_dir, exist_ok=True)
+    os.makedirs(vis_dir / "minimal", exist_ok=True)
+    os.makedirs(vis_dir / "all", exist_ok=True)
     
     log_step(None, f"Generating ProLif visualizations for top {min(display_limit, len(results))} results...", color="white")
 
@@ -591,8 +636,11 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                 logging.warning(f"Missing {protein_cif}. Skipping visualization for {protein_pocket_base}.")
                 continue
 
-            fp_dataframes = []
-            ligand_labels = []
+            fp_dataframes_minimal = []
+            ligand_labels_minimal = []
+            
+            fp_dataframes_all = []
+            ligand_labels_all = []
 
             try:
                 with _prepare_prolif_protein(protein_cif) as protein_mol:
@@ -610,40 +658,57 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                         if not poses:
                             continue
                             
-                        fp = plf.Fingerprint(all_interactions)
-                        fp.run_from_iterable([poses[0]], protein_mol, progress=False)
+                        versions = [
+                            ("minimal", {}, fp_dataframes_minimal, ligand_labels_minimal),
+                            ("all", {"count": True}, fp_dataframes_all, ligand_labels_all)
+                        ]
                         
-                        # Generate 2D network screenshot
-                        out_png = vis_dir / f"{protein_pocket_base}_{ligand}_prolif.png"
-                        try:
-                            _generate_network_plot(fp, poses[0], driver, out_png)
-                        except Exception as e:
-                            logging.error(f"Failed to generate network plot for {protein_pocket_base}_{ligand}: {e}")
-                        
-                        df_i = fp.to_dataframe()
-                        
-                        if 'ligand' in df_i.columns.names:
-                            idx = df_i.columns.names.index('ligand')
-                            new_tuples = [tuple('LIG' if i == idx else val for i, val in enumerate(tup)) for tup in df_i.columns]
-                            df_i.columns = pd.MultiIndex.from_tuples(new_tuples, names=df_i.columns.names)
+                        for v_name, fp_kwargs, fp_dfs, lig_labels in versions:
+                            fp = plf.Fingerprint(all_interactions, **fp_kwargs)
+                            fp.run_from_iterable([poses[0]], protein_mol, progress=False)
                             
-                        fp_dataframes.append(df_i)
-                        ligand_labels.append(label)
+                            out_png = vis_dir / v_name / f"{protein_pocket_base}_{ligand}_prolif.png"
+                            try:
+                                _generate_network_plot(fp, poses[0], driver, out_png)
+                            except Exception as e:
+                                logging.error(f"Failed to generate {v_name} network plot for {protein_pocket_base}_{ligand}: {e}")
+                            
+                            df = fp.to_dataframe()
+                            
+                            if 'ligand' in df.columns.names:
+                                idx = df.columns.names.index('ligand')
+                                new_tuples = [tuple('LIG' if i == idx else val for i, val in enumerate(tup)) for tup in df.columns]
+                                df.columns = pd.MultiIndex.from_tuples(new_tuples, names=df.columns.names)
+                                
+                            fp_dfs.append(df)
+                            lig_labels.append(label)
                         
             except Exception as e:
                 logging.error(f"Failed to process protein {protein} or its ligands for ProLif visualization: {e}")
                 continue
 
-            if fp_dataframes:
-                df_combined = pd.concat(fp_dataframes, ignore_index=True).fillna(False)
-                df_combined.index = ligand_labels
-                
-                pdf_path = vis_dir / f"{protein_pocket_base}_barcode.pdf"
-                tiff_path = vis_dir / f"{protein_pocket_base}_barcode.tiff"
-                try:
-                    _generate_barcode_plot(df_combined, pdf_path, tiff_path, protein_pocket_base)
-                except Exception as e:
-                    logging.error(f"Failed to generate barcode plot for {protein_pocket_base}: {e}")
+            for fp_dfs, lbls, version in [(fp_dataframes_minimal, ligand_labels_minimal, "minimal"),
+                                          (fp_dataframes_all, ligand_labels_all, "all")]:
+                if fp_dfs:
+                    df_combined = pd.concat(fp_dfs, ignore_index=True)
+                    if version == "all":
+                        df_combined = df_combined.fillna(0)
+                        df_combined.index = lbls
+                        
+                        tiff_path = vis_dir / version / f"{protein_pocket_base}_heatmap.tiff"
+                        try:
+                            _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base)
+                        except Exception as e:
+                            logging.error(f"Failed to generate {version} heatmap plot for {protein_pocket_base}: {e}")
+                    else:
+                        df_combined = df_combined.fillna(False)
+                        df_combined.index = lbls
+                        
+                        tiff_path = vis_dir / version / f"{protein_pocket_base}_barcode.tiff"
+                        try:
+                            _generate_barcode_plot(df_combined, tiff_path, protein_pocket_base)
+                        except Exception as e:
+                            logging.error(f"Failed to generate {version} barcode plot for {protein_pocket_base}: {e}")
 
         log_step(None, f"All ProLif visualizations saved to {vis_dir}", color="magenta")
     finally:
