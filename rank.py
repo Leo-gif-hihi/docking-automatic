@@ -595,6 +595,15 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
     
     try:
         driver = webdriver.Chrome(options=chrome_options)
+        
+        # Force a high-resolution render (Device Scale Factor)
+        metrics = {
+            "width": 1200,
+            "height": 800,
+            "deviceScaleFactor": 3,
+            "mobile": False
+        }
+        driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", metrics)
     except Exception as e:
         logging.error(f"Failed to initialize Selenium Chrome driver: {e}")
         log_step(None, "Skipping ProLif visualization because Selenium Chrome driver could not be initialized.", color="yellow")
