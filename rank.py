@@ -190,10 +190,11 @@ def _generate_barcode_plot(df_combined, tiff_path, protein_pocket_base):
     ax = Barcode(df_sorted).display(
         figsize=(10, min(8, max(4, len(sorted_columns) * 0.3))),
         dpi=300,
-        xlabel="Compound"
+        xlabel=""
     )
     
     fig = ax.figure
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right', rotation_mode='anchor', fontsize=8)
     fig.savefig(str(tiff_path), format="tiff", dpi=600, bbox_inches="tight")
     plt.close(fig)
     
@@ -234,7 +235,7 @@ def _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base):
     plt.title(f"Interaction Heatmap for {protein_pocket_base}", pad=20)
     plt.ylabel("")
     plt.xlabel("")
-    plt.xticks(rotation=0)
+    plt.xticks(rotation=45, ha='right', rotation_mode='anchor', fontsize=8)
     plt.yticks(rotation=0)
     plt.tight_layout()
     
