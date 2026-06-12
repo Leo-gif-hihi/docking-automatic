@@ -709,7 +709,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                             interaction_groups[interaction].append(f"{prot_res} ({int(val)})")
                                 
                                 formatted_ligand = label
-                                energy_str = f"{energy:.3f}".replace('.', ',')
+                                energy_val = float(f"{energy:.3f}")
                                 
                                 if not interaction_groups:
                                     excel_data_rows.append({
@@ -717,7 +717,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                         'No': complex_no,
                                         'Protein': protein_pocket_base,
                                         'Ligand': formatted_ligand,
-                                        'Docking score (kcal/mol)': energy_str,
+                                        'Docking score (kcal/mol)': energy_val,
                                         'Interaction': "None",
                                         'Amino Acid (number of interaction)': "None"
                                     })
@@ -729,7 +729,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                                 'No': complex_no,
                                                 'Protein': protein_pocket_base,
                                                 'Ligand': formatted_ligand,
-                                                'Docking score (kcal/mol)': energy_str,
+                                                'Docking score (kcal/mol)': energy_val,
                                                 'Interaction': interaction,
                                                 'Amino Acid (number of interaction)': aa
                                             })
@@ -780,6 +780,10 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
         from openpyxl.styles import Alignment, Font, Border, Side
         
         excel_df = pd.DataFrame(excel_data_rows)
+        
+        # Sort by Docking score
+        excel_df = excel_df.sort_values(by=['Docking score (kcal/mol)', 'complex_id'])
+        
         excel_path = vis_dir / "prolif_interactions_summary.xlsx"
         
         # Write to Excel
@@ -787,7 +791,7 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
         ws = wb.active
         ws.title = "Interactions"
         
-        columns = ['No', 'Protein', 'Ligand', 'Docking score (kcal/mol)', 'Interaction', 'Amino Acid (number of interaction)']
+        columns = ['Protein', 'Ligand', 'Docking score (kcal/mol)', 'Interaction', 'Amino Acid (number of interaction)']
         ws.append(columns)
         
         # Style header
@@ -835,16 +839,14 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
         merge_column_by_key('A', 'complex_id')
         merge_column_by_key('B', 'complex_id')
         merge_column_by_key('C', 'complex_id')
-        merge_column_by_key('D', 'complex_id')
-        merge_column_by_key('E', 'complex_id', merge_by_interaction=True)
+        merge_column_by_key('D', 'complex_id', merge_by_interaction=True)
         
         # Adjust column widths
-        ws.column_dimensions['A'].width = 5
-        ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 30
-        ws.column_dimensions['D'].width = 15
-        ws.column_dimensions['E'].width = 20
-        ws.column_dimensions['F'].width = 25
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 30
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 20
+        ws.column_dimensions['E'].width = 25
         
         wb.save(str(excel_path))
         log_step(None, f"Excel interaction summary saved to {excel_path}", color="white")
