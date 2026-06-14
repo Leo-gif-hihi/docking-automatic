@@ -966,6 +966,64 @@ def split_scrubbed_ligand(ligand_scrubbed, output_dir, ligand_base):
         
     return split_files
 
+def preprocess_ligand(ligand_path, output_file):
+    """
+    Pre-processes the ligand:
+    - Chooses the largest fragment if there are multiple.
+    - Sanitizes the molecule using RDKit.
+    - Relaxes the molecule using UFFOptimizeMolecule.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    import logging
+    from logger_utils import log_step
+
+    try:
+        suppl = Chem.SDMolSupplier(str(ligand_path), removeHs=False, sanitize=False)
+        mol = None
+        for m in suppl:
+            if m is not None:
+                mol = m
+                break
+    except Exception as e:
+        logging.error(f"Error opening molecule from {ligand_path}: {e}")
+        return False
+            
+    if mol is None:
+        logging.error(f"Could not read molecule from {ligand_path}")
+        return False
+
+    # Get fragments
+    frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+    if len(frags) > 1:
+        logging.warning(f"File {ligand_path.name} contains {len(frags)} fragments. Choosing the largest one.")
+        largest_frag = max(frags, key=lambda x: x.GetNumHeavyAtoms())
+        mol = largest_frag
+
+    # Sanitize
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception as e:
+        logging.warning(f"Sanitization failed for {ligand_path.name}: {e}")
+        
+    # Relax molecule
+    try:
+        if mol.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(mol, randomSeed=42)
+        AllChem.UFFOptimizeMolecule(mol)
+    except Exception as e:
+        logging.warning(f"UFF optimization failed for {ligand_path.name}, proceeding with unoptimized molecule. Error: {e}")
+
+    try:
+        writer = Chem.SDWriter(str(output_file))
+        writer.write(mol)
+        writer.close()
+    except Exception as e:
+        logging.error(f"Error writing preprocessed molecule to {output_file}: {e}")
+        return False
+
+    return True
+
 def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomers: bool):
     """
     Prepares the ligand using Molscrub and Meeko.
@@ -980,12 +1038,18 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomer
     prepared_dir = Path(output_dir)
     prepared_dir.mkdir(parents=True, exist_ok=True)
 
+    ligand_preprocessed = prepared_dir / f"{ligand_base}_preprocessed.sdf"
     ligand_scrubbed = prepared_dir / f"{ligand_base}_scrubbed.sdf"
 
     logging.debug(f"Preparing ligand {ligand_file}...")
 
+    # 2.5 Preprocessing Ligand (Largest fragment, Sanitize, relax)
+    if not preprocess_ligand(ligand_path, ligand_preprocessed):
+        logging.error(f"Preprocessing failed for {ligand_base}. Skipping.")
+        return []
+
     # 3. Scrubbing & Protonating Ligand (Molscrub)
-    run_scrub_ligand(ligand_path, ligand_scrubbed, ph, generate_isomers)
+    run_scrub_ligand(ligand_preprocessed, ligand_scrubbed, ph, generate_isomers)
 
     # 3.1 Split Scrubbed Ligand by Isomer and find lowest energy conformer
     isomer_files = split_scrubbed_ligand(ligand_scrubbed, prepared_dir, ligand_base)
