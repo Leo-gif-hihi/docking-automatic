@@ -12,6 +12,12 @@ p2rank_2.6-alpha/
 !*.py
 !*.sh
 
+# Allow yml file
+!*.yml
+
+# Allow shell script file
+!*.sh
+
 # Allow documentation files
 !*.md
 

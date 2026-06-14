@@ -976,7 +976,6 @@ def preprocess_ligand(ligand_path, output_file):
     from rdkit import Chem
     from rdkit.Chem import AllChem
     import logging
-    from logger_utils import log_step
 
     try:
         suppl = Chem.SDMolSupplier(str(ligand_path), removeHs=False, sanitize=False)
