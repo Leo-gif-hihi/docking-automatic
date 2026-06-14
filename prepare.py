@@ -1004,7 +1004,7 @@ def preprocess_ligand(ligand_path, output_file):
         Chem.SanitizeMol(mol)
     except Exception as e:
         logging.warning(f"Sanitization failed for {ligand_path.name}: {e}")
-        
+        return False
     # Relax molecule
     try:
         if mol.GetNumConformers() == 0:
