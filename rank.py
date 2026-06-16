@@ -208,10 +208,10 @@ def _load_cid_to_name(ligand_names=None):
     if summary_csv_path.exists():
         try:
             with open(summary_csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
+                reader = csv.reader(f)
                 for row in reader:
-                    if "Compound_CID" in row and "Name" in row:
-                        cid_to_name[row["Compound_CID"]] = row["Name"]
+                    if len(row) >= 2:
+                        cid_to_name[row[0].strip()] = row[1].strip()
         except Exception as e:
             logging.warning(f"Failed to read summary CSV: {e}")
     return cid_to_name
