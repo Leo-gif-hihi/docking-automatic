@@ -288,16 +288,18 @@ def print_ranking(results, output_csv=None, ligand_path=None):
             key = (protein, pocket, ligand)
             energies = energies_dict.get(key, [energy])
             mean_e = statistics.mean(energies)
+            # Use unicode minus \u2212 and plus-minus \u00B1 to prevent Excel formula evaluation
+            mean_str = f"{mean_e:.2f}".replace("-", "\u2212")
             if len(energies) > 1:
                 sd_e = statistics.stdev(energies)
-                mean_sd_str = f"{mean_e:.2f} +- {sd_e:.2f}"
+                mean_sd_str = f"{mean_str} \u00B1 {sd_e:.2f}"
             else:
-                mean_sd_str = f"{mean_e:.2f} +- N/A"
+                mean_sd_str = f"{mean_str} \u00B1 N/A"
             base_res.append(mean_sd_str)
         return base_res
 
     header_raw = ['Protein', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
-    header_curated = header_raw + ['Mean+-SD (kcal/mol)']
+    header_curated = header_raw + ['Mean ± SD (kcal/mol)']
 
     formatted_results = [format_row(row, is_curated=False) for row in results]
     formatted_curated = [format_row(row, is_curated=True) for row in curated_results]
@@ -305,7 +307,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
     print()
     display_limit = 10
     log_step(None, f"--- Top {min(display_limit, len(formatted_curated))} Curated Best Complexes by Free Energy (Total: {len(formatted_curated)}) ---", color="magenta")
-    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20} | {'Mean+-SD (kcal/mol)':<20}", color="magenta")
+    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20} | {'Mean ± SD (kcal/mol)':<20}", color="magenta")
     log_step(None, "-" * 92, color="magenta")
     for row in formatted_curated[:display_limit]:
         protein, pocket, cid, lname, iso, run, energy, mean_sd = row
@@ -313,7 +315,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
 
     if output_csv:
         try:
-            with open(output_csv, 'w', newline='') as f:
+            with open(output_csv, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
                 writer.writerow(header_raw)
                 writer.writerows(formatted_results)
@@ -321,7 +323,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
             log_step(None, f"Raw ranking saved to {output_csv}", color="magenta")
             
             best_csv = Path(output_csv).with_name(f"curated_best_{Path(output_csv).name}")
-            with open(best_csv, 'w', newline='') as f:
+            with open(best_csv, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
                 writer.writerow(header_curated)
                 writer.writerows(formatted_curated)
