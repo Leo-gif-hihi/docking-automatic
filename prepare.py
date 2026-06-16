@@ -1005,13 +1005,6 @@ def preprocess_ligand(ligand_path, output_file):
     except Exception as e:
         logging.warning(f"Sanitization failed for {ligand_path.name}: {e}")
         return False
-    # Relax molecule
-    try:
-        if mol.GetNumConformers() == 0:
-            AllChem.EmbedMolecule(mol, randomSeed=42)
-        AllChem.UFFOptimizeMolecule(mol)
-    except Exception as e:
-        logging.warning(f"UFF optimization failed for {ligand_path.name}, proceeding with unoptimized molecule. Error: {e}")
 
     try:
         writer = Chem.SDWriter(str(output_file))
