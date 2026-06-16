@@ -149,17 +149,9 @@ def main():
             "WARNING",
             "If you want to use the previous results and ensure that all files in these directories "
             "are relevant to your project (for example, rerun the workflow after interrupted), "
-            "feel free to ignore this warning.", color="yellow"
+            "feel free to ignore this warning. Otherwise, please delete them manually.", color="yellow"
         )
-        ans = input("Do you want to delete them before continuing? (y/N): ").strip().lower()
-        if ans == 'y':
-            import shutil
-            for d in existing_dirs:
-                shutil.rmtree(d, ignore_errors=True)
-            log_step("INFO", "Directories deleted.")
-            print()
-        else:
-            print("Continuing without deleting...\n")
+        print()
 
     # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
