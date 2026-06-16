@@ -906,16 +906,22 @@ def run_meeko_ligand(ligand_scrubbed, ligand_pdbqt):
     """Runs mk_prepare_ligand.py (Meeko) to prepare the ligand."""
     import subprocess
     from pathlib import Path
+    import logging
 
     if Path(ligand_pdbqt).exists():
         logging.debug(f"Skipping Meeko: {ligand_pdbqt} already exists.")
-        return
+        return True
 
     cmd_meeko = [
         "mk_prepare_ligand.py", "-i", str(ligand_scrubbed), 
-        "-o", str(ligand_pdbqt)
+        "-o", str(ligand_pdbqt), "--bad_charge_ok"
     ]
-    subprocess.run(cmd_meeko, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(cmd_meeko, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Meeko failed to prepare {ligand_scrubbed}:\n{e.stderr}")
+        return False
 
 def split_scrubbed_ligand(ligand_scrubbed, output_dir, ligand_base):
     """
@@ -1051,8 +1057,8 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomer
     for isomer_file in isomer_files:
         isomer_base = isomer_file.stem
         ligand_pdbqt = prepared_dir / f"{isomer_base}.pdbqt"
-        run_meeko_ligand(isomer_file, ligand_pdbqt)
-        pdbqt_files.append(ligand_pdbqt)
+        if run_meeko_ligand(isomer_file, ligand_pdbqt):
+            pdbqt_files.append(ligand_pdbqt)
 
     return pdbqt_files
 
