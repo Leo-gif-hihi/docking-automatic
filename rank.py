@@ -201,7 +201,7 @@ def _load_cid_to_name(ligand_path=None):
     import logging
     
     cid_to_name = {}
-    summary_csv_path = Path(ligand_path if ligand_path else "ligand-test") / "PubChem_compound_summary_list.csv"
+    summary_csv_path = Path(ligand_path) / "PubChem_compound_summary_list.csv"
     if summary_csv_path.exists():
         try:
             with open(summary_csv_path, 'r', encoding='utf-8') as f:
@@ -338,7 +338,7 @@ def _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base):
     
     log_step(None, f"Saved heatmap for {protein_pocket_base}", color="white")
 
-def print_ranking(results, output_csv=None, ligand_path=None):
+def print_ranking(results, output_csv=None, ligand_path=None, prepared_dir=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
         return []
@@ -404,8 +404,7 @@ def print_ranking(results, output_csv=None, ligand_path=None):
     formatted_results = [format_row(row, is_curated=False) for row in results]
     
     ligand_properties = {}
-    ligand_dir = ligand_path
-    prepared_dir = Path(f"{ligand_dir}_prepared")
+    prepared_dir = Path(prepared_dir)
     
     formatted_curated = []
     for row in curated_results:
