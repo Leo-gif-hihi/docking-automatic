@@ -889,7 +889,8 @@ def run_scrub_ligand(ligand_path, ligand_scrubbed, ph, generate_isomers):
     import subprocess
     from pathlib import Path
 
-    if Path(ligand_scrubbed).exists():
+    scrub_path = Path(ligand_scrubbed)
+    if scrub_path.exists() and scrub_path.stat().st_size > 0:
         logging.debug(f"Skipping Scrub: {ligand_scrubbed} already exists.")
         return
 
@@ -908,10 +909,12 @@ def run_meeko_ligand(ligand_scrubbed, ligand_pdbqt):
     from pathlib import Path
     import logging
 
-    if Path(ligand_pdbqt).exists():
+    pdbqt_path = Path(ligand_pdbqt)
+    if pdbqt_path.exists() and pdbqt_path.stat().st_size > 0:
         logging.debug(f"Skipping Meeko: {ligand_pdbqt} already exists.")
         return True
 
+    # "--bad_charge_ok" is not needed with autodock-vina
     cmd_meeko = [
         "mk_prepare_ligand.py", "-i", str(ligand_scrubbed), 
         "-o", str(ligand_pdbqt), "--bad_charge_ok"
@@ -932,6 +935,10 @@ def split_scrubbed_ligand(ligand_scrubbed, output_dir, ligand_base):
     import json
     from pathlib import Path
     
+    scrubbed_path = Path(ligand_scrubbed)
+    if not scrubbed_path.exists() or scrubbed_path.stat().st_size == 0:
+        return []
+        
     suppl = Chem.SDMolSupplier(str(ligand_scrubbed), removeHs=False)
     
     # dictionary: isomerId -> list of (energy, mol)
