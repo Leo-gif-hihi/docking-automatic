@@ -24,6 +24,7 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Automated Docking with AutoDock Vina")
     parser.add_argument("--protein_list", default="protein.txt", help="Text file containing list of protein PDB codes")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
+    parser.add_argument("--ligand_names", type=str, default=None, help="Path to ligand names CSV file (default: ligand_dir/ligand_names.csv)")
     parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_list})")
     parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_list}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
@@ -135,6 +136,9 @@ def main():
 
     if args.box_dir is None:
         args.box_dir = f"box_{protein_list_name}"
+
+    if args.ligand_names is None:
+        args.ligand_names = str(Path(args.ligand_dir) / "ligand_names.csv")
 
     existing_dirs = [d for d in [args.output_dir, str(protein_path), protein_clean_dir, ligand_prepared_dir] if os.path.exists(d)]
     if existing_dirs:
@@ -330,14 +334,14 @@ def main():
     print()
     log_step("WORKFLOW", "Docking complete. Generating ranking...")
     results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
-    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv", ligand_path, ligand_prepared_dir)
+    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv", ligand_path, ligand_prepared_dir, args.ligand_names)
     
     log_step("WORKFLOW", "Generating complex files for top results...")
     if curated_results:
         generate_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=20)
         
         # New: Generate ProLif visualization
-        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=20)
+        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=20, ligand_names=args.ligand_names)
     else:
         logging.warning("No valid curated results to generate complexes from.")
     

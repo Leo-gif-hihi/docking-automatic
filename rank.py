@@ -194,14 +194,17 @@ def _get_base_ligand(ligand):
     """Extracts the base ligand name, ignoring isomer suffixes."""
     return ligand.split("_isomer_")[0] if "_isomer_" in ligand else ligand
 
-def _load_cid_to_name(ligand_path=None):
-    """Loads a mapping of CID to compound names from PubChem_compound_summary_list.csv."""
+def _load_cid_to_name(ligand_names=None):
+    """Loads a mapping of CID to compound names from the provided CSV file."""
     import csv
     from pathlib import Path
     import logging
     
     cid_to_name = {}
-    summary_csv_path = Path(ligand_path) / "PubChem_compound_summary_list.csv"
+    if not ligand_names:
+        return cid_to_name
+        
+    summary_csv_path = Path(ligand_names)
     if summary_csv_path.exists():
         try:
             with open(summary_csv_path, 'r', encoding='utf-8') as f:
@@ -338,7 +341,7 @@ def _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base):
     
     log_step(None, f"Saved heatmap for {protein_pocket_base}", color="white")
 
-def print_ranking(results, output_csv=None, ligand_path=None, prepared_dir=None):
+def print_ranking(results, output_csv=None, ligand_path=None, prepared_dir=None, ligand_names=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
         return []
@@ -356,7 +359,7 @@ def print_ranking(results, output_csv=None, ligand_path=None, prepared_dir=None)
     curated_results.sort(key=lambda x: x[4])  # Sort by energy
 
     # Load CID to Name mapping
-    cid_to_name = _load_cid_to_name(ligand_path)
+    cid_to_name = _load_cid_to_name(ligand_names)
 
     import statistics
 
@@ -658,7 +661,7 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
             
     log_step(None, f"Complexes saved to {vis_dir}", color="white")
 
-def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path=None, display_limit=20):
+def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path=None, display_limit=20, ligand_names=None):
     if not results:
         return
         
@@ -724,7 +727,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         return
 
     # Map CIDs to standard names
-    cid_to_name = _load_cid_to_name(ligand_path)
+    cid_to_name = _load_cid_to_name(ligand_names)
 
     # Set publication typography globally
     plt.rcParams.update({
