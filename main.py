@@ -9,7 +9,7 @@ from rich.logging import RichHandler
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from logger_utils import log_step, console
 
-from rank import rank_complexes, print_ranking, generate_complexes, visualize_prolif_results
+from rank import rank_complexes, print_ranking, generate_complexes, visualize_prolif_results, generate_ranking_heatmap
 
 from pocket import process_pockets
 
@@ -37,6 +37,7 @@ def parse_args(args=None):
     parser.add_argument("--generate_isomers", action="store_true", help="Generate acid-base and tautomer isomers during ligand preparation (default is to skip)")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
     parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
+    parser.add_argument("--display_limit", type=int, default=20, help="Number of top compounds to display in visualization and heatmaps (default: 20)")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -330,10 +331,13 @@ def main():
     
     log_step("WORKFLOW", "Generating complex files for top results...")
     if curated_results:
-        generate_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=20)
+        generate_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=args.display_limit)
         
-        # New: Generate ProLif visualization
-        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=20, ligand_names=args.ligand_names)
+        # Generate ProLif visualization
+        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=args.display_limit, ligand_names=args.ligand_names)
+
+        # Generate Heatmap Visualization
+        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, display_limit=args.display_limit)
     else:
         logging.warning("No valid curated results to generate complexes from.")
     

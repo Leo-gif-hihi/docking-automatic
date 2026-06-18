@@ -865,3 +865,98 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
         logging.warning("openpyxl is not installed. Skipping Excel summary generation. (pip install openpyxl)")
     except Exception as e:
         logging.error(f"Failed to generate Excel summary: {e}")
+
+def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, display_limit=20):
+    """
+    Generates a heatmap of docking scores (affinity) for top compounds across different protein pockets.
+    X-axis: Protein_pocket
+    Y-axis: Ligand names (top N based on overall minimum energy)
+    """
+    if not curated_results:
+        return
+
+    from pathlib import Path
+    import logging
+    from logger_utils import log_step
+
+    try:
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Load ligand names mapping
+        cid_to_name = _load_cid_to_name(ligand_names)
+        
+        data = []
+        for protein, pocket, ligand, run, energy in curated_results:
+            protein_pocket = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
+            base_ligand = _get_base_ligand(ligand)
+            # Address user's feedback: _get_base_ligand retrieves the base string from curated_results.
+            # Then map to common name if it exists, otherwise keep base_ligand.
+            ligand_name = cid_to_name.get(base_ligand, base_ligand)
+            data.append({
+                "Protein_pocket": protein_pocket,
+                "Ligand": ligand_name,
+                "Energy": energy
+            })
+            
+        df = pd.DataFrame(data)
+        
+        if df.empty:
+            logging.warning("No data available to generate ranking heatmap.")
+            return
+
+        # Identify top N compounds based on their best (minimum) overall docking score
+        top_ligands = df.groupby('Ligand')['Energy'].min().nsmallest(display_limit).index
+        
+        # Identify top N proteins/pockets based on their best (minimum) overall docking score
+        top_proteins = df.groupby('Protein_pocket')['Energy'].min().nsmallest(display_limit).index
+        
+        # Filter dataframe for only those top ligands AND top proteins
+        df_filtered = df[df['Ligand'].isin(top_ligands) & df['Protein_pocket'].isin(top_proteins)]
+        
+        # Pivot the dataframe to create a matrix for the heatmap
+        heatmap_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='Energy', aggfunc='min')
+        
+        # Sort Y-axis (Ligands) by the overall best energy
+        sorted_ligands = df_filtered.groupby('Ligand')['Energy'].min().sort_values().index
+        heatmap_data = heatmap_data.loc[sorted_ligands]
+        
+        # Sort X-axis (Proteins) by the overall best energy
+        sorted_proteins = df_filtered.groupby('Protein_pocket')['Energy'].min().sort_values().index
+        heatmap_data = heatmap_data[sorted_proteins]
+        
+        # Plot
+        fig_width = max(10, len(heatmap_data.columns) * 1.5)
+        fig_height = max(8, len(heatmap_data.index) * 0.5)
+        
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        
+        # We use a colormap where lower values (better affinity) are distinct.
+        sns.heatmap(heatmap_data, cmap='YlGnBu_r', annot=True, fmt=".1f", 
+                    cbar_kws={'label': 'Docking Score (kcal/mol)'},
+                    linewidths=.5, ax=ax, 
+                    mask=heatmap_data.isnull())  # Missing data is masked
+        
+        # Invert the colorbar so dark color (lowest score) is at the top
+        cbar = ax.collections[0].colorbar
+        cbar.ax.invert_yaxis()
+        
+        plt.title(f"Docking Scores Heatmap (Top {len(sorted_ligands)} Compounds)", pad=20, fontsize=14)
+        plt.xlabel("Protein / Pocket", fontsize=12)
+        plt.ylabel("Compound", fontsize=12)
+        plt.xticks(rotation=45, ha='right', fontsize=10)
+        plt.yticks(rotation=0, fontsize=10)
+        plt.tight_layout()
+        
+        vis_dir = Path(output_dir) / "visualization"
+        vis_dir.mkdir(parents=True, exist_ok=True)
+        heatmap_path = vis_dir / "ranking_heatmap.tiff"
+        
+        fig.savefig(str(heatmap_path), format="tiff", dpi=600, bbox_inches="tight")
+        plt.close(fig)
+        
+        log_step(None, f"Ranking heatmap saved to {heatmap_path}", color="magenta")
+
+    except Exception as e:
+        logging.error(f"Failed to generate ranking heatmap: {e}")
