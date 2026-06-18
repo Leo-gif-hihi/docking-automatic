@@ -320,15 +320,13 @@ def run_pdbfixer(protein_path, fixed_protein_path):
         fixer = PDBFixer(filename=str(protein_path))
         
         # Find missing residues and atoms, then add them
-        fixer.findNonstandardResidues()
-        fixer.replaceNonstandardResidues()
         fixer.findMissingResidues()
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
         
         # Save the repaired structure
         with open(fixed_protein_path, 'w') as f:
-            PDBxFile.writeFile(fixer.topology, fixer.positions, f,keepIds=True)
+            PDBxFile.writeFile(fixer.topology, fixer.positions, f)
             
         logging.debug(f"Saved fixed structure to {fixed_protein_path}")
         return True
