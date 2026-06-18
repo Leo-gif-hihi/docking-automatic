@@ -22,11 +22,11 @@ from p2rank import process_unprocessed_with_p2rank
 def parse_args(args=None):
     """Handles argument parsing separately so it can be tested with mock lists of args."""
     parser = argparse.ArgumentParser(description="Automated Docking with AutoDock Vina")
-    parser.add_argument("--protein_list", default="protein.txt", help="Text file containing list of protein PDB codes")
+    parser.add_argument("--protein_input", default="protein.txt", help="Text file containing list of protein PDB codes OR directory containing protein files")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
     parser.add_argument("--ligand_names", type=str, default=None, help="Path to ligand names CSV file (default: ligand_dir/ligand_names.csv)")
-    parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_list})")
-    parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_list}_{ligand_dir})")
+    parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_input})")
+    parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_input}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
     parser.add_argument("--skip_autopoc", action="store_true", help="Skip automatic pocket identification and use existing provided box files")
     parser.add_argument("--dock_all_pockets", action="store_true", help="Generate box files for all pockets and dock ligands into all of them. Default is to only use the highest-scoring pocket.")
@@ -125,23 +125,33 @@ def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, prot
 def main():
     args = parse_args()
 
-    # Dynamically set protein_path, protein_clean_dir, output_dir, and box_dir based on protein_list and ligand_dir
-    protein_list_name = Path(args.protein_list).stem
+    # Dynamically set protein_path, protein_clean_dir, output_dir, and box_dir based on protein_input and ligand_dir
+    protein_input_path = Path(args.protein_input)
+    protein_input_name = protein_input_path.stem
     ligand_dir_name = Path(args.ligand_dir).stem
-    protein_path = Path(protein_list_name)
-    protein_clean_dir = f"{protein_list_name}_prepared"
+    
+    if protein_input_path.is_dir():
+        protein_path = protein_input_path
+    else:
+        protein_path = Path(protein_input_name)
+        
+    protein_clean_dir = f"{protein_input_name}_prepared"
     ligand_prepared_dir = f"{ligand_dir_name}_prepared"
 
     if args.output_dir is None:
-        args.output_dir = f"output_{protein_list_name}_{ligand_dir_name}"
+        args.output_dir = f"output_{protein_input_name}_{ligand_dir_name}"
 
     if args.box_dir is None:
-        args.box_dir = f"box_{protein_list_name}"
+        args.box_dir = f"box_{protein_input_name}"
 
     if args.ligand_names is None:
         args.ligand_names = str(Path(args.ligand_dir) / "ligand_names.csv")
 
-    existing_dirs = [d for d in [args.output_dir, str(protein_path), protein_clean_dir, ligand_prepared_dir] if os.path.exists(d)]
+    dirs_to_check = [args.output_dir, protein_clean_dir, ligand_prepared_dir]
+    if not protein_input_path.is_dir():
+        dirs_to_check.append(str(protein_path))
+        
+    existing_dirs = [d for d in dirs_to_check if os.path.exists(d)]
     if existing_dirs:
         print()
         log_step("WARNING", f"The following directories already exist: {', '.join(existing_dirs)}", color="yellow")
@@ -158,15 +168,19 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     setup_logging(args.output_dir)
 
-    os.makedirs(protein_path, exist_ok=True)
-    try:
-        step_start = time.time()
+    if not protein_input_path.is_dir():
+        os.makedirs(protein_path, exist_ok=True)
+        try:
+            step_start = time.time()
+            print()
+            log_step("WORKFLOW", "Starting protein download process...")
+            download_proteins(args.protein_input, str(protein_path))
+            log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
+        except FileNotFoundError:
+            return
+    else:
         print()
-        log_step("WORKFLOW", "Starting protein download process...")
-        download_proteins(args.protein_list, str(protein_path))
-        log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
-    except FileNotFoundError:
-        return
+        log_step("WORKFLOW", f"Using existing protein directory: {protein_path}")
 
     ligand_path = Path(args.ligand_dir)
     box_path = Path(args.box_dir)
