@@ -326,7 +326,7 @@ def main():
     print()
     log_step("WORKFLOW", "Docking complete. Generating ranking...")
     results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
-    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv", ligand_path, ligand_prepared_dir, args.ligand_names)
+    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv", ligand_names=args.ligand_names)
     
     log_step("WORKFLOW", "Generating complex files for top results...")
     if curated_results:

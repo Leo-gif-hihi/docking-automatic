@@ -9,6 +9,101 @@ from logger_utils import log_step, console
 # Turn off ProDy's progress text to keep your terminal clean
 confProDy(verbosity='none')
 
+# RDKit imports
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors
+    from rdkit.Chem import rdMolDescriptors
+    from rdkit.Chem import QED
+    from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+    from rdkit.Chem import RDConfig
+    from rdkit import RDLogger
+    import sys
+    from pathlib import Path
+    
+    # Suppress RDKit deprecation warnings (e.g., MorganGenerator from sascorer)
+    RDLogger.DisableLog('rdApp.warning')
+    
+    params = FilterCatalogParams()
+    params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
+    pains_catalog = FilterCatalog(params)
+    
+    sa_score_path = os.path.join(RDConfig.RDContribDir, 'SA_Score')
+    if sa_score_path not in sys.path:
+        sys.path.append(sa_score_path)
+    import sascorer
+    RDKIT_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"RDKit or sascorer could not be imported. Physicochemical properties will not be calculated. Error: {e}")
+    RDKIT_AVAILABLE = False
+
+def _calculate_rdkit_properties(sdf_path):
+    if not RDKIT_AVAILABLE:
+        return ["N/A"] * 19
+        
+    if not Path(sdf_path).exists():
+        logging.warning(f"SDF file not found for RDKit calculation: {sdf_path}")
+        return ["N/A"] * 19
+        
+    try:
+        suppl = Chem.SDMolSupplier(str(sdf_path))
+        mol = suppl[0] if len(suppl) > 0 else None
+        if mol is None:
+            return ["N/A"] * 19
+            
+        formula = rdMolDescriptors.CalcMolFormula(mol)
+        smiles = Chem.MolToSmiles(mol)
+        hac = mol.GetNumHeavyAtoms()
+        mw = Descriptors.MolWt(mol)
+        charge = Chem.GetFormalCharge(mol)
+        
+        # Lipinski
+        logp = Descriptors.MolLogP(mol)
+        hbd = Descriptors.NumHDonors(mol)
+        hba = Descriptors.NumHAcceptors(mol)
+        
+        pass_mw = mw <= 500
+        pass_logp = logp <= 5
+        pass_hbd = hbd <= 5
+        pass_hba = hba <= 10
+        violations = sum([not pass_mw, not pass_logp, not pass_hbd, not pass_hba])
+        
+        nrotb = Descriptors.NumRotatableBonds(mol)
+        tot_rings = rdMolDescriptors.CalcNumRings(mol)
+        ali_rings = rdMolDescriptors.CalcNumAliphaticRings(mol)
+        aro_rings = rdMolDescriptors.CalcNumAromaticRings(mol)
+        fsp3 = rdMolDescriptors.CalcFractionCSP3(mol)
+        chiral = len(Chem.FindMolChiralCenters(mol, includeUnassigned=True))
+        tpsa = Descriptors.TPSA(mol)
+        
+        # PAINS
+        pains_matches = pains_catalog.GetMatches(mol)
+        if pains_matches:
+            pains_list = [entry.GetDescription() for entry in pains_matches]
+            pains_str = ", ".join(pains_list)
+        else:
+            pains_str = "None"
+            
+        qed = QED.qed(mol)
+        
+        # SA Score
+        try:
+            sa = sascorer.calculateScore(mol)
+        except Exception:
+            sa = "N/A"
+            
+        return [
+            formula, smiles, hac, charge, round(mw, 2), 
+            round(logp, 2), hbd, hba, violations,
+            nrotb, tot_rings, ali_rings, aro_rings, round(fsp3, 2),
+            chiral, round(tpsa, 2), pains_str, round(qed, 2), 
+            round(sa, 2) if isinstance(sa, float) else sa
+        ]
+        
+    except Exception as e:
+        logging.warning(f"Error calculating RDKit properties for {sdf_path}: {e}")
+        return ["N/A"] * 19
+
 
 def get_hetatms(structure):
     """Extracts unique HETATM residue names from a structure, excluding water."""
@@ -1035,23 +1130,41 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomer
     Returns the path to the resulting PDBQT file.
     """
     from pathlib import Path
-
+    import csv
+    logging.debug(f"Preparing ligand {ligand_file}...")
+    prepared_dir = Path(output_dir)
+    prepared_dir.mkdir(parents=True, exist_ok=True)
     ligand_path = Path(ligand_file)
     ligand_dir = ligand_path.parent
     ligand_base = ligand_path.stem
 
-    prepared_dir = Path(output_dir)
-    prepared_dir.mkdir(parents=True, exist_ok=True)
 
     ligand_preprocessed = prepared_dir / f"{ligand_base}_preprocessed.sdf"
     ligand_scrubbed = prepared_dir / f"{ligand_base}_scrubbed.sdf"
-
-    logging.debug(f"Preparing ligand {ligand_file}...")
 
     # 2.5 Preprocessing Ligand (Largest fragment, Sanitize, relax)
     if not preprocess_ligand(ligand_path, ligand_preprocessed):
         logging.error(f"Preprocessing failed for {ligand_base}. Skipping.")
         return []
+
+    rdkit_headers = [
+        'Ligand', 'Molecular Formula', 'SMILES', 'Heavy Atom Count', 'Formal Charge', 'MW', 
+        'LogP', 'HBD', 'HBA', 'Lipinski Violations',
+        'nRotB', 'Total Rings', 'Aliphatic Rings', 'Aromatic Rings', 'Fsp3', 
+        'Stereocenters', 'TPSA', 'PAINS', 'QED', 'SA Score'
+    ]
+    
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    metadata_csv = Path(output_dir) / "ligand_metadata.csv"
+    
+    # Calculate properties for the ligand before prep
+    write_header = not metadata_csv.exists()
+    with open(metadata_csv, 'a', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(rdkit_headers)
+        props = _calculate_rdkit_properties(ligand_file)
+        writer.writerow([Path(ligand_file).stem] + props)
 
     # 3. Scrubbing & Protonating Ligand (Molscrub)
     run_scrub_ligand(ligand_preprocessed, ligand_scrubbed, ph, generate_isomers)
@@ -1075,11 +1188,22 @@ def prepare_ligands(ligand_path, ph, output_dir, generate_isomers=False):
     Returns a dictionary mapping ligand names to their PDBQT paths.
     """
     from pathlib import Path
+    
+    metadata_csv = Path(output_dir) / "ligand_metadata.csv"
+    if metadata_csv.exists():
+        try:
+            metadata_csv.unlink()
+        except OSError:
+            pass
+            
     prepared_ligands = {}
     for lig_file in Path(ligand_path).glob("*.sdf"):
         lig_pdbqts = prepare_ligand(str(lig_file), ph, output_dir, generate_isomers)
         for lig_pdbqt in lig_pdbqts:
             prepared_ligands[lig_pdbqt.stem] = lig_pdbqt
+            
+    metadata_csv = Path(output_dir) / "ligand_metadata.csv"
+    log_step(None, f"Ligand metadata saved to {metadata_csv}", color="white")
     return prepared_ligands
 
 if __name__ == "__main__":

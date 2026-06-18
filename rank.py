@@ -5,99 +5,7 @@ import re
 from pathlib import Path
 from logger_utils import log_step
 
-# RDKit imports
-try:
-    from rdkit import Chem
-    from rdkit.Chem import Descriptors
-    from rdkit.Chem import rdMolDescriptors
-    from rdkit.Chem import QED
-    from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
-    from rdkit.Chem import RDConfig
-    from rdkit import RDLogger
-    import sys
-    
-    # Suppress RDKit deprecation warnings (e.g., MorganGenerator from sascorer)
-    RDLogger.DisableLog('rdApp.warning')
-    
-    params = FilterCatalogParams()
-    params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
-    pains_catalog = FilterCatalog(params)
-    
-    sa_score_path = os.path.join(RDConfig.RDContribDir, 'SA_Score')
-    if sa_score_path not in sys.path:
-        sys.path.append(sa_score_path)
-    import sascorer
-    RDKIT_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"RDKit or sascorer could not be imported. Physicochemical properties will not be calculated. Error: {e}")
-    RDKIT_AVAILABLE = False
 
-def _calculate_rdkit_properties(sdf_path):
-    if not RDKIT_AVAILABLE:
-        return ["N/A"] * 19
-        
-    if not Path(sdf_path).exists():
-        logging.warning(f"SDF file not found for RDKit calculation: {sdf_path}")
-        return ["N/A"] * 19
-        
-    try:
-        suppl = Chem.SDMolSupplier(str(sdf_path))
-        mol = suppl[0] if len(suppl) > 0 else None
-        if mol is None:
-            return ["N/A"] * 19
-            
-        formula = rdMolDescriptors.CalcMolFormula(mol)
-        smiles = Chem.MolToSmiles(mol)
-        hac = mol.GetNumHeavyAtoms()
-        mw = Descriptors.MolWt(mol)
-        charge = Chem.GetFormalCharge(mol)
-        
-        # Lipinski
-        logp = Descriptors.MolLogP(mol)
-        hbd = Descriptors.NumHDonors(mol)
-        hba = Descriptors.NumHAcceptors(mol)
-        
-        pass_mw = mw <= 500
-        pass_logp = logp <= 5
-        pass_hbd = hbd <= 5
-        pass_hba = hba <= 10
-        violations = sum([not pass_mw, not pass_logp, not pass_hbd, not pass_hba])
-        
-        nrotb = Descriptors.NumRotatableBonds(mol)
-        tot_rings = rdMolDescriptors.CalcNumRings(mol)
-        ali_rings = rdMolDescriptors.CalcNumAliphaticRings(mol)
-        aro_rings = rdMolDescriptors.CalcNumAromaticRings(mol)
-        fsp3 = rdMolDescriptors.CalcFractionCSP3(mol)
-        chiral = len(Chem.FindMolChiralCenters(mol, includeUnassigned=True))
-        tpsa = Descriptors.TPSA(mol)
-        
-        # PAINS
-        pains_matches = pains_catalog.GetMatches(mol)
-        if pains_matches:
-            pains_list = [entry.GetDescription() for entry in pains_matches]
-            pains_str = ", ".join(pains_list)
-        else:
-            pains_str = "None"
-            
-        qed = QED.qed(mol)
-        
-        # SA Score
-        try:
-            sa = sascorer.calculateScore(mol)
-        except Exception:
-            sa = "N/A"
-            
-        return [
-            formula, smiles, hac, charge, round(mw, 2), 
-            round(logp, 2), hbd, hba, violations,
-            nrotb, tot_rings, ali_rings, aro_rings, round(fsp3, 2),
-            chiral, round(tpsa, 2), pains_str, round(qed, 2), 
-            round(sa, 2) if isinstance(sa, float) else sa
-        ]
-        
-    except Exception as e:
-        logging.warning(f"Error calculating RDKit properties for {sdf_path}: {e}")
-        return ["N/A"] * 19
 
 def extract_free_energy(log_file):
     """Parses a Vina log file and returns the top free energy (affinity) score."""
@@ -341,7 +249,7 @@ def _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base):
     
     log_step(None, f"Saved heatmap for {protein_pocket_base}", color="white")
 
-def print_ranking(results, output_csv=None, ligand_path=None, prepared_dir=None, ligand_names=None):
+def print_ranking(results, output_csv=None, ligand_names=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
         return []
@@ -396,27 +304,13 @@ def print_ranking(results, output_csv=None, ligand_path=None, prepared_dir=None,
         return base_res
 
     header_raw = ['Protein', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
-    rdkit_headers = [
-        'Molecular Formula', 'SMILES', 'Heavy Atom Count', 'Formal Charge', 'MW', 
-        'LogP', 'HBD', 'HBA', 'Lipinski Violations',
-        'nRotB', 'Total Rings', 'Aliphatic Rings', 'Aromatic Rings', 'Fsp3', 
-        'Stereocenters', 'TPSA', 'PAINS', 'QED', 'SA Score'
-    ]
-    header_curated = header_raw + ['Mean ± SD (kcal/mol)'] + rdkit_headers
+    header_curated = header_raw + ['Mean ± SD (kcal/mol)']
 
     formatted_results = [format_row(row, is_curated=False) for row in results]
     
-    ligand_properties = {}
-    prepared_dir = Path(prepared_dir)
-    
     formatted_curated = []
     for row in curated_results:
-        protein, pocket, ligand, run, energy = row
         base_row = format_row(row, is_curated=True)
-        if ligand not in ligand_properties:
-            sdf_file = prepared_dir / f"{ligand}.sdf"
-            ligand_properties[ligand] = _calculate_rdkit_properties(sdf_file)
-        base_row.extend(ligand_properties[ligand])
         formatted_curated.append(base_row)
 
     print()
