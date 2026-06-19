@@ -934,6 +934,10 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, dis
         # Pivot the dataframe to create a matrix for the heatmap
         heatmap_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='Energy', aggfunc='min')
         
+        # Replace positive docking scores (poor binding) with NaN to avoid skewing color scale
+        import numpy as np
+        heatmap_data = heatmap_data.mask(heatmap_data > 0, np.nan)
+        
         # Sort Y-axis (Ligands) by the overall best energy
         sorted_ligands = df_filtered.groupby('Ligand')['Energy'].min().sort_values().index.tolist()
         
