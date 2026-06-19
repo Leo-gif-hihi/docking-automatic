@@ -866,7 +866,7 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
     except Exception as e:
         logging.error(f"Failed to generate Excel summary: {e}")
 
-def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, display_limit=20):
+def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, display_limit=20, positive_control_map=None):
     """
     Generates a heatmap of docking scores (affinity) for top compounds across different protein pockets.
     X-axis: Protein_pocket
@@ -891,14 +891,26 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, dis
         for protein, pocket, ligand, run, energy in curated_results:
             protein_pocket = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
             base_ligand = _get_base_ligand(ligand)
-            # Address user's feedback: _get_base_ligand retrieves the base string from curated_results.
-            # Then map to common name if it exists, otherwise keep base_ligand.
-            ligand_name = cid_to_name.get(base_ligand, base_ligand)
-            data.append({
-                "Protein_pocket": protein_pocket,
-                "Ligand": ligand_name,
-                "Energy": energy
-            })
+            is_positive_control = False
+            if positive_control_map and base_ligand in positive_control_map:
+                if protein in positive_control_map[base_ligand]:
+                    is_positive_control = True
+                    
+            if is_positive_control:
+                data.append({
+                    "Protein_pocket": protein_pocket,
+                    "Ligand": "Positive Control",
+                    "Energy": energy
+                })
+            else:
+                # Address user's feedback: _get_base_ligand retrieves the base string from curated_results.
+                # Then map to common name if it exists, otherwise keep base_ligand.
+                ligand_name = cid_to_name.get(base_ligand, base_ligand)
+                data.append({
+                    "Protein_pocket": protein_pocket,
+                    "Ligand": ligand_name,
+                    "Energy": energy
+                })
             
         df = pd.DataFrame(data)
         
@@ -907,7 +919,11 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, dis
             return
 
         # Identify top N compounds based on their best (minimum) overall docking score
-        top_ligands = df.groupby('Ligand')['Energy'].min().nsmallest(display_limit).index
+        top_ligands = df.groupby('Ligand')['Energy'].min().nsmallest(display_limit).index.tolist()
+        
+        # Always include 'Positive Control' if it exists in the data
+        if "Positive Control" in df['Ligand'].values and "Positive Control" not in top_ligands:
+            top_ligands.append("Positive Control")
         
         # Identify top N proteins/pockets based on their best (minimum) overall docking score
         top_proteins = df.groupby('Protein_pocket')['Energy'].min().nsmallest(display_limit).index
@@ -919,7 +935,13 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, dis
         heatmap_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='Energy', aggfunc='min')
         
         # Sort Y-axis (Ligands) by the overall best energy
-        sorted_ligands = df_filtered.groupby('Ligand')['Energy'].min().sort_values().index
+        sorted_ligands = df_filtered.groupby('Ligand')['Energy'].min().sort_values().index.tolist()
+        
+        # Ensure 'Positive Control' is always at the top
+        if "Positive Control" in sorted_ligands:
+            sorted_ligands.remove("Positive Control")
+            sorted_ligands.insert(0, "Positive Control")
+            
         heatmap_data = heatmap_data.loc[sorted_ligands]
         
         # Sort X-axis (Proteins) by the overall best energy

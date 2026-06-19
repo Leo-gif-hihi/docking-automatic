@@ -376,7 +376,7 @@ def main():
         visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=args.display_limit, ligand_names=args.ligand_names)
 
         # Generate Heatmap Visualization
-        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, display_limit=args.display_limit)
+        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, display_limit=args.display_limit, positive_control_map=positive_control_map)
     else:
         logging.warning("No valid curated results to generate complexes from.")
     
