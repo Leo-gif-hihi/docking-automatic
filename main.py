@@ -1,9 +1,11 @@
 import os
+import csv
 import argparse
 import subprocess
 import logging
 import time
 from pathlib import Path
+from collections import defaultdict
 
 from rich.logging import RichHandler
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
@@ -38,6 +40,7 @@ def parse_args(args=None):
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
     parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
     parser.add_argument("--display_limit", type=int, default=20, help="Number of top compounds to display in visualization and heatmaps (default: 20)")
+    parser.add_argument("--positive_control", type=str, default=None, help="Path to a CSV file containing 'ligand' and 'protein' columns to restrict docking to specific pairs. Ligands not in the CSV will dock to all proteins.")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -63,7 +66,7 @@ def setup_logging(output_dir):
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
 
-def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_runs=3):
+def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_runs=3, positive_control_map=None):
     """
     Generator that creates valid combinations of protein, ligand, and box files.
     Yields: (protein_base, ligand_base, box_file, run_index)
@@ -80,6 +83,10 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_run
 
         for box_file in box_files:
             for ligand_base in prepared_ligands:
+                base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
+                if positive_control_map and base_ligand in positive_control_map:
+                    if protein_base not in positive_control_map[base_ligand]:
+                        continue
                 for run_index in range(1, num_runs + 1):
                     yield protein_base, ligand_base, box_file, run_index
 
@@ -124,6 +131,24 @@ def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, prot
 
 def main():
     args = parse_args()
+
+    positive_control_map = None
+    if args.positive_control:
+        if os.path.exists(args.positive_control):
+            positive_control_map = defaultdict(list)
+            try:
+                with open(args.positive_control, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        lig = row.get('ligand', '').strip()
+                        prot = row.get('protein', '').strip()
+                        if lig and prot:
+                            positive_control_map[lig].append(prot)
+                logging.info(f"Loaded positive control mapping from {args.positive_control}")
+            except Exception as e:
+                logging.error(f"Error reading positive control file: {e}")
+        else:
+            logging.warning(f"Positive control file {args.positive_control} not found. Ignoring.")
 
     # Dynamically set protein_path, protein_clean_dir, output_dir, and box_dir based on protein_input and ligand_dir
     protein_input_path = Path(args.protein_input)
@@ -266,7 +291,7 @@ def main():
         logging.error("Error: Box directory does not exist after pocket identification.")
         return
 
-    jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, args.num_runs))
+    jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, args.num_runs, positive_control_map))
     total_jobs = len(jobs_list)
     error_jobs = []
     step_start = time.time()
