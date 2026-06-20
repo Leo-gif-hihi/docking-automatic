@@ -102,27 +102,32 @@ def _get_base_ligand(ligand):
     """Extracts the base ligand name, ignoring isomer suffixes."""
     return ligand.split("_isomer_")[0] if "_isomer_" in ligand else ligand
 
-def _load_cid_to_name(ligand_names=None):
-    """Loads a mapping of CID to compound names from the provided CSV file."""
+def _load_mapping_from_csv(csv_path=None):
+    """Loads a mapping from the first two columns of a provided CSV file."""
     import csv
     from pathlib import Path
     import logging
     
-    cid_to_name = {}
-    if not ligand_names:
-        return cid_to_name
+    mapping = {}
+    if not csv_path:
+        return mapping
         
-    summary_csv_path = Path(ligand_names)
-    if summary_csv_path.exists():
+    path_obj = Path(csv_path)
+    if path_obj.exists():
         try:
-            with open(summary_csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
+            with open(path_obj, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                f.seek(0)
+                delimiter = '\t' if '\t' in first_line else ','
+                reader = csv.reader(f, delimiter=delimiter)
                 for row in reader:
                     if len(row) >= 2:
-                        cid_to_name[row[0].strip()] = row[1].strip()
+                        key = row[0].strip().lower()
+                        val = row[1].strip()
+                        mapping[key] = val
         except Exception as e:
-            logging.warning(f"Failed to read summary CSV: {e}")
-    return cid_to_name
+            logging.warning(f"Failed to read CSV mapping {csv_path}: {e}")
+    return mapping
 
 from contextlib import contextmanager
 
@@ -249,7 +254,7 @@ def _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base):
     
     log_step(None, f"Saved heatmap for {protein_pocket_base}", color="white")
 
-def print_ranking(results, output_csv=None, ligand_names=None):
+def print_ranking(results, output_csv=None, ligand_names=None, protein_names=None):
     if not results:
         logging.warning("No valid log files or energy scores found.")
         return []
@@ -266,8 +271,9 @@ def print_ranking(results, output_csv=None, ligand_names=None):
     curated_results = list(best_dict.values())
     curated_results.sort(key=lambda x: x[4])  # Sort by energy
 
-    # Load CID to Name mapping
-    cid_to_name = _load_cid_to_name(ligand_names)
+    # Load mappings
+    cid_to_name = _load_mapping_from_csv(ligand_names)
+    protein_to_name = _load_mapping_from_csv(protein_names)
 
     import statistics
 
@@ -286,9 +292,10 @@ def print_ranking(results, output_csv=None, ligand_names=None):
             isomer = parts[1] if len(parts) > 1 else ""
         else:
             isomer = "N/A"
-        ligand_name = cid_to_name.get(cid, "N/A")
+        ligand_name = cid_to_name.get(cid.lower(), "N/A")
+        protein_name = protein_to_name.get(protein.lower(), "N/A")
         
-        base_res = [protein, pocket, cid, ligand_name, isomer, run, energy]
+        base_res = [protein, protein_name, pocket, cid, ligand_name, isomer, run, energy]
         if is_curated:
             key = (protein, pocket, ligand)
             energies = energies_dict.get(key, [energy])
@@ -303,7 +310,7 @@ def print_ranking(results, output_csv=None, ligand_names=None):
             base_res.append(mean_sd_str)
         return base_res
 
-    header_raw = ['Protein', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
+    header_raw = ['Protein', 'Protein_name', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
     header_curated = header_raw + ['Mean ± SD (kcal/mol)']
 
     formatted_results = [format_row(row, is_curated=False) for row in results]
@@ -319,7 +326,7 @@ def print_ranking(results, output_csv=None, ligand_names=None):
     log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20} | {'Mean ± SD (kcal/mol)':<20}", color="magenta")
     log_step(None, "-" * 92, color="magenta")
     for row in formatted_curated[:display_limit]:
-        protein, pocket, cid, lname, iso, run, energy, mean_sd = row[:8]
+        protein, protein_name, pocket, cid, lname, iso, run, energy, mean_sd = row[:9]
         log_step(None, f"{protein:<15} | {pocket:<10} | {cid:<15} | {energy:<20.2f} | {mean_sd:<20}", color="magenta")
 
     if output_csv:
@@ -555,7 +562,7 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
             
     log_step(None, f"Complexes saved to {vis_dir}", color="white")
 
-def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path=None, display_limit=20, ligand_names=None):
+def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path=None, display_limit=20, ligand_names=None, protein_names=None):
     if not results:
         return
         
@@ -620,8 +627,9 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         log_step(None, "Skipping ProLif visualization because Selenium Chrome driver could not be initialized.", color="yellow")
         return
 
-    # Map CIDs to standard names
-    cid_to_name = _load_cid_to_name(ligand_names)
+    # Map CIDs and Proteins to standard names
+    cid_to_name = _load_mapping_from_csv(ligand_names)
+    protein_to_name = _load_mapping_from_csv(protein_names)
 
     # Set publication typography globally
     plt.rcParams.update({
@@ -655,6 +663,8 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         
         for (protein, pocket), target_results in targets.items():
             protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
+            display_protein = protein_to_name.get(protein.lower(), protein)
+            display_protein_pocket = f"{display_protein}_pocket_{pocket}" if pocket != "N/A" else display_protein
             protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
             
             if not protein_cif.exists():
@@ -677,7 +687,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                             continue
 
                         base_ligand = _get_base_ligand(ligand)
-                        label = cid_to_name.get(base_ligand, base_ligand)
+                        label = cid_to_name.get(base_ligand.lower(), base_ligand)
                         
                         poses = list(plf.sdf_supplier(str(ligand_sdf)))
                         if not poses:
@@ -692,7 +702,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                             fp = plf.Fingerprint(all_interactions, **fp_kwargs)
                             fp.run_from_iterable([poses[0]], protein_mol, progress=False)
                             
-                            out_png = vis_dir / v_name / f"{protein_pocket_base}_{ligand}_prolif.png"
+                            out_png = vis_dir / v_name / f"{display_protein_pocket}_{ligand}_prolif.png"
                             try:
                                 _generate_network_plot(fp, poses[0], driver, out_png)
                             except Exception as e:
@@ -726,7 +736,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                     excel_data_rows.append({
                                         'complex_id': complex_no,
                                         'No': complex_no,
-                                        'Protein': protein_pocket_base,
+                                        'Protein': display_protein_pocket,
                                         'Ligand': formatted_ligand,
                                         'Docking score (kcal/mol)': energy_val,
                                         'Interaction': "None",
@@ -738,7 +748,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                             excel_data_rows.append({
                                                 'complex_id': complex_no,
                                                 'No': complex_no,
-                                                'Protein': protein_pocket_base,
+                                                'Protein': display_protein_pocket,
                                                 'Ligand': formatted_ligand,
                                                 'Docking score (kcal/mol)': energy_val,
                                                 'Interaction': interaction,
@@ -758,18 +768,18 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                         df_combined = df_combined.fillna(0)
                         df_combined.index = lbls
                         
-                        tiff_path = vis_dir / version / f"{protein_pocket_base}_heatmap.tiff"
+                        tiff_path = vis_dir / version / f"{display_protein_pocket}_heatmap.tiff"
                         try:
-                            _generate_heatmap_plot(df_combined, tiff_path, protein_pocket_base)
+                            _generate_heatmap_plot(df_combined, tiff_path, display_protein_pocket)
                         except Exception as e:
                             logging.error(f"Failed to generate {version} heatmap plot for {protein_pocket_base}: {e}")
                     else:
                         df_combined = df_combined.fillna(False)
                         df_combined.index = lbls
                         
-                        tiff_path = vis_dir / version / f"{protein_pocket_base}_barcode.tiff"
+                        tiff_path = vis_dir / version / f"{display_protein_pocket}_barcode.tiff"
                         try:
-                            _generate_barcode_plot(df_combined, tiff_path, protein_pocket_base)
+                            _generate_barcode_plot(df_combined, tiff_path, display_protein_pocket)
                         except Exception as e:
                             logging.error(f"Failed to generate {version} barcode plot for {protein_pocket_base}: {e}")
 
@@ -866,7 +876,7 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
     except Exception as e:
         logging.error(f"Failed to generate Excel summary: {e}")
 
-def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, display_limit=20, positive_control_map=None):
+def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, protein_names=None, display_limit=20, positive_control_map=None):
     """
     Generates a heatmap of docking scores (affinity) for top compounds across different protein pockets.
     X-axis: Protein_pocket
@@ -884,12 +894,14 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, dis
         import matplotlib.pyplot as plt
         import seaborn as sns
         
-        # Load ligand names mapping
-        cid_to_name = _load_cid_to_name(ligand_names)
+        # Load mappings
+        cid_to_name = _load_mapping_from_csv(ligand_names)
+        protein_to_name = _load_mapping_from_csv(protein_names)
         
         data = []
         for protein, pocket, ligand, run, energy in curated_results:
-            protein_pocket = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
+            display_protein = protein_to_name.get(protein.lower(), protein)
+            protein_pocket = f"{display_protein}_pocket_{pocket}" if pocket != "N/A" else display_protein
             base_ligand = _get_base_ligand(ligand)
             is_positive_control = False
             if positive_control_map and base_ligand in positive_control_map:
@@ -905,7 +917,7 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, dis
             else:
                 # Address user's feedback: _get_base_ligand retrieves the base string from curated_results.
                 # Then map to common name if it exists, otherwise keep base_ligand.
-                ligand_name = cid_to_name.get(base_ligand, base_ligand)
+                ligand_name = cid_to_name.get(base_ligand.lower(), base_ligand)
                 data.append({
                     "Protein_pocket": protein_pocket,
                     "Ligand": ligand_name,

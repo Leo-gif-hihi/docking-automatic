@@ -27,6 +27,7 @@ def parse_args(args=None):
     parser.add_argument("--protein_input", default="protein.txt", help="Text file containing list of protein PDB codes OR directory containing protein files")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
     parser.add_argument("--ligand_names", type=str, default=None, help="Path to ligand names CSV file (default: ligand_dir/ligand_names.csv)")
+    parser.add_argument("--protein_names", type=str, default=None, help="Path to protein names CSV file")
     parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_input})")
     parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_input}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
@@ -366,17 +367,17 @@ def main():
     print()
     log_step("WORKFLOW", "Docking complete. Generating ranking...")
     results = rank_complexes(args.output_dir, list(prepared_ligands.keys()) if prepared_ligands else None)
-    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv", ligand_names=args.ligand_names)
+    curated_results = print_ranking(results, Path(args.output_dir) / "ranking.csv", ligand_names=args.ligand_names, protein_names=args.protein_names)
     
     log_step("WORKFLOW", "Generating complex files for top results...")
     if curated_results:
         generate_complexes(curated_results, args.output_dir, protein_clean_dir, display_limit=args.display_limit)
         
         # Generate ProLif visualization
-        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=args.display_limit, ligand_names=args.ligand_names)
+        visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=args.display_limit, ligand_names=args.ligand_names, protein_names=args.protein_names)
 
         # Generate Heatmap Visualization
-        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, display_limit=args.display_limit, positive_control_map=positive_control_map)
+        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, protein_names=args.protein_names, display_limit=args.display_limit, positive_control_map=positive_control_map)
     else:
         logging.warning("No valid curated results to generate complexes from.")
     
