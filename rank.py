@@ -132,7 +132,8 @@ def _load_mapping_from_csv(csv_path=None):
 def _get_protein_pockets(curated_results):
     """Returns a dictionary mapping protein to a set of its unique pockets."""
     protein_pockets = {}
-    for protein, pocket, _, _, _ in curated_results:
+    for row in curated_results:
+        protein, pocket = row[:2]
         if protein not in protein_pockets:
             protein_pockets[protein] = set()
         if pocket != "N/A":
@@ -274,22 +275,6 @@ def print_ranking(results, output_csv=None, ligand_names=None, protein_names=Non
         logging.warning("No valid log files or energy scores found.")
         return []
         
-    best_dict = {}
-    for protein, pocket, ligand, run, energy in results:
-        base_ligand = _get_base_ligand(ligand)
-            
-        key = (protein, pocket, base_ligand)
-        # Keep the one with the lowest energy
-        if key not in best_dict or energy < best_dict[key][4]:
-            best_dict[key] = (protein, pocket, ligand, run, energy)
-            
-    curated_results = list(best_dict.values())
-    curated_results.sort(key=lambda x: x[4])  # Sort by energy
-
-    # Load mappings
-    cid_to_name = _load_mapping_from_csv(ligand_names)
-    protein_to_name = _load_mapping_from_csv(protein_names)
-
     import statistics
 
     energies_dict = {}
@@ -298,8 +283,50 @@ def print_ranking(results, output_csv=None, ligand_names=None, protein_names=Non
         if key not in energies_dict:
             energies_dict[key] = []
         energies_dict[key].append(energy)
+        
+    mean_energies = {}
+    for key, energies in energies_dict.items():
+        mean_energies[key] = statistics.mean(energies)
 
-    def format_row(row, is_curated=False):
+    best_dict = {}
+    for protein, pocket, ligand, run, energy in results:
+        base_ligand = _get_base_ligand(ligand)
+        key = (protein, pocket, base_ligand)
+        isomer_key = (protein, pocket, ligand)
+        isomer_mean = mean_energies[isomer_key]
+        
+        # Keep the isomer with the lowest mean energy
+        if key not in best_dict:
+            best_dict[key] = (isomer_mean, (protein, pocket, ligand, run, energy))
+        else:
+            if isomer_mean < best_dict[key][0]:
+                best_dict[key] = (isomer_mean, (protein, pocket, ligand, run, energy))
+            elif isomer_mean == best_dict[key][0]:
+                # Tie-breaker: lowest single energy
+                if energy < best_dict[key][1][4]:
+                    best_dict[key] = (isomer_mean, (protein, pocket, ligand, run, energy))
+            
+    best_results = [val[1] for val in best_dict.values()]
+
+    curated_results_with_stats = []
+    
+    for row in best_results:
+        protein, pocket, ligand, run, energy = row
+        key = (protein, pocket, ligand)
+        energies = energies_dict.get(key, [energy])
+        mean_e = statistics.mean(energies)
+        sd_e = statistics.stdev(energies) if len(energies) > 1 else None
+        
+        curated_results_with_stats.append((protein, pocket, ligand, run, energy, mean_e, sd_e))
+
+    # Sort curated results by mean affinity (lowest/most negative first)
+    curated_results_with_stats.sort(key=lambda x: x[5])
+
+    # Load mappings
+    cid_to_name = _load_mapping_from_csv(ligand_names)
+    protein_to_name = _load_mapping_from_csv(protein_names)
+
+    def format_row(row):
         protein, pocket, ligand, run, energy = row
         cid = _get_base_ligand(ligand)
         if "_isomer_" in ligand:
@@ -311,38 +338,32 @@ def print_ranking(results, output_csv=None, ligand_names=None, protein_names=Non
         protein_name = protein_to_name.get(protein.lower(), "N/A")
         
         base_res = [protein, protein_name, pocket, cid, ligand_name, isomer, run, energy]
-        if is_curated:
-            key = (protein, pocket, ligand)
-            energies = energies_dict.get(key, [energy])
-            mean_e = statistics.mean(energies)
-            # Use unicode minus \u2212 and plus-minus \u00B1 to prevent Excel formula evaluation
-            mean_str = f"{mean_e:.2f}".replace("-", "\u2212")
-            if len(energies) > 1:
-                sd_e = statistics.stdev(energies)
-                mean_sd_str = f"{mean_str} \u00B1 {sd_e:.2f}"
-            else:
-                mean_sd_str = f"{mean_str} \u00B1 N/A"
-            base_res.append(mean_sd_str)
         return base_res
 
     header_raw = ['Protein', 'Protein_name', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Affinity (kcal/mol)']
-    header_curated = header_raw + ['Mean ± SD (kcal/mol)']
+    header_curated = ['Protein', 'Protein_name', 'Pocket ID', 'CID', 'Ligand_name', 'Isomer', 'Run', 'Lowest affinity (kcal/mol)', 'Mean affinity (kcal/mol)', 'SD']
 
-    formatted_results = [format_row(row, is_curated=False) for row in results]
+    formatted_results = [format_row(row) for row in results]
     
     formatted_curated = []
-    for row in curated_results:
-        base_row = format_row(row, is_curated=True)
+    for cur_res in curated_results_with_stats:
+        protein, pocket, ligand, run, energy, mean_e, sd_e = cur_res
+        base_row = format_row((protein, pocket, ligand, run, energy))
+        
+        mean_str = f"{mean_e:.2f}".replace("-", "\u2212")
+        sd_str = f"{sd_e:.2f}" if sd_e is not None else "N/A"
+        
+        base_row.extend([mean_str, sd_str])
         formatted_curated.append(base_row)
 
     print()
     display_limit = 10
-    log_step(None, f"--- Top {min(display_limit, len(formatted_curated))} Curated Best Complexes by Free Energy (Total: {len(formatted_curated)}) ---", color="magenta")
-    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Affinity (kcal/mol)':<20} | {'Mean ± SD (kcal/mol)':<20}", color="magenta")
-    log_step(None, "-" * 92, color="magenta")
+    log_step(None, f"--- Top {min(display_limit, len(formatted_curated))} Curated Best Complexes by Mean Free Energy (Total: {len(formatted_curated)}) ---", color="magenta")
+    log_step(None, f"{'Protein':<15} | {'Pocket ID':<10} | {'CID':<15} | {'Lowest affinity (kcal/mol)':<28} | {'Mean affinity (kcal/mol)':<26} | {'SD':<10}", color="magenta")
+    log_step(None, "-" * 115, color="magenta")
     for row in formatted_curated[:display_limit]:
-        protein, protein_name, pocket, cid, lname, iso, run, energy, mean_sd = row[:9]
-        log_step(None, f"{protein:<15} | {pocket:<10} | {cid:<15} | {energy:<20.2f} | {mean_sd:<20}", color="magenta")
+        protein, protein_name, pocket, cid, lname, iso, run, energy, mean_str, sd_str = row[:10]
+        log_step(None, f"{protein:<15} | {pocket:<10} | {cid:<15} | {energy:<28.2f} | {mean_str:<26} | {sd_str:<10}", color="magenta")
 
     if output_csv:
         try:
@@ -363,7 +384,7 @@ def print_ranking(results, output_csv=None, ligand_names=None, protein_names=Non
         except Exception as e:
             logging.error(f"Error saving to CSV: {e}")
 
-    return curated_results
+    return curated_results_with_stats
 
 def _convert_to_pdb(input_file, in_format, output_file, extra_args=None):
     import subprocess
@@ -503,7 +524,8 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
     log_step(None, f"Generating PDB complex files for top {min(display_limit, len(results))} results...", color="white")
     
     complex_chain_mappings = {}
-    for protein, pocket, ligand, run, energy in results[:display_limit]:
+    for row in results[:display_limit]:
+        protein, pocket, ligand, run, energy = row[:5]
         protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
         
         # Paths
@@ -665,7 +687,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
     # Group results by Protein and Pocket
     targets = {}
     for row in results[:display_limit]:
-        protein, pocket, ligand, run, energy = row
+        protein, pocket, ligand, run, energy, mean_e, sd_e = row
         key = (protein, pocket)
         if key not in targets:
             targets[key] = []
@@ -696,7 +718,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
             try:
                 with _prepare_prolif_protein(protein_cif) as protein_mol:
                     for row in target_results:
-                        _, _, ligand, run, energy = row
+                        _, _, ligand, run, energy, mean_e, sd_e = row
                         ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
                         
                         if not ligand_sdf.exists():
@@ -746,7 +768,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                                             interaction_groups[interaction].append(f"{prot_res} ({int(val)})")
                                 
                                 formatted_ligand = label
-                                energy_val = float(f"{energy:.3f}")
+                                energy_val = float(f"{mean_e:.3f}")
                                 
                                 if not interaction_groups:
                                     excel_data_rows.append({
@@ -896,7 +918,7 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
     """
     Generates a heatmap of docking scores (affinity) for top compounds across different protein pockets.
     X-axis: Protein_pocket
-    Y-axis: Ligand names (top N based on overall minimum energy)
+    Y-axis: Ligand names (top N based on overall mean energy)
     """
     if not curated_results:
         return
@@ -916,7 +938,7 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
         protein_pockets = _get_protein_pockets(curated_results)
         
         data = []
-        for protein, pocket, ligand, run, energy in curated_results:
+        for protein, pocket, ligand, run, energy, mean_e, sd_e in curated_results:
             protein_pocket = _format_display_protein_pocket(protein, pocket, protein_to_name, protein_pockets)
                 
             base_ligand = _get_base_ligand(ligand)
@@ -929,7 +951,7 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
                 data.append({
                     "Protein_pocket": protein_pocket,
                     "Ligand": "Positive Control",
-                    "Energy": energy
+                    "Energy": mean_e
                 })
             else:
                 # Address user's feedback: _get_base_ligand retrieves the base string from curated_results.
@@ -938,7 +960,7 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
                 data.append({
                     "Protein_pocket": protein_pocket,
                     "Ligand": ligand_name,
-                    "Energy": energy
+                    "Energy": mean_e
                 })
             
         df = pd.DataFrame(data)
@@ -947,28 +969,29 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
             logging.warning("No data available to generate ranking heatmap.")
             return
 
-        # Identify top N compounds based on their best (minimum) overall docking score
-        top_ligands = df.groupby('Ligand')['Energy'].min().nsmallest(display_limit).index.tolist()
+        # Filter out positive scores (>= 0) for ranking calculations so poor binding doesn't heavily penalize the mean
+        df_for_ranking = df[df['Energy'] < 0]
         
-        # Always include 'Positive Control' if it exists in the data
-        if "Positive Control" in df['Ligand'].values and "Positive Control" not in top_ligands:
+        # Identify top N ligands based on their best (mean) overall docking score across all proteins
+        top_ligands = df_for_ranking.groupby('Ligand')['Energy'].mean().nsmallest(display_limit).index.tolist()
+        if "Positive Control" not in top_ligands:
             top_ligands.append("Positive Control")
         
-        # Identify top N proteins/pockets based on their best (minimum) overall docking score
-        top_proteins = df.groupby('Protein_pocket')['Energy'].min().nsmallest(display_limit).index
+        # Identify top N proteins/pockets based on their best (mean) overall docking score
+        top_proteins = df_for_ranking.groupby('Protein_pocket')['Energy'].mean().nsmallest(display_limit).index
         
         # Filter dataframe for only those top ligands AND top proteins
         df_filtered = df[df['Ligand'].isin(top_ligands) & df['Protein_pocket'].isin(top_proteins)]
         
         # Pivot the dataframe to create a matrix for the heatmap
-        heatmap_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='Energy', aggfunc='min')
+        heatmap_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='Energy', aggfunc='mean')
         
         # Replace positive docking scores (poor binding) with NaN to avoid skewing color scale
         import numpy as np
-        heatmap_data = heatmap_data.mask(heatmap_data > 0, np.nan)
+        heatmap_data = heatmap_data.mask(heatmap_data >= 0, np.nan)
         
-        # Sort Y-axis (Ligands) by the overall best energy
-        sorted_ligands = df_filtered.groupby('Ligand')['Energy'].min().sort_values().index.tolist()
+        # Sort Y-axis (Ligands) by the overall best energy (excluding >= 0 scores)
+        sorted_ligands = df_filtered[df_filtered['Energy'] < 0].groupby('Ligand')['Energy'].mean().sort_values().index.tolist()
         
         # Ensure 'Positive Control' is always at the top
         if "Positive Control" in sorted_ligands:
@@ -977,8 +1000,8 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
             
         heatmap_data = heatmap_data.loc[sorted_ligands]
         
-        # Sort X-axis (Proteins) by the overall best energy
-        sorted_proteins = df_filtered.groupby('Protein_pocket')['Energy'].min().sort_values().index
+        # Sort X-axis (Proteins) by the overall best energy (excluding >= 0 scores)
+        sorted_proteins = df_filtered[df_filtered['Energy'] < 0].groupby('Protein_pocket')['Energy'].mean().sort_values().index
         heatmap_data = heatmap_data[sorted_proteins]
         
         # Plot
