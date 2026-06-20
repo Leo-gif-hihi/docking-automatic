@@ -129,6 +129,21 @@ def _load_mapping_from_csv(csv_path=None):
             logging.warning(f"Failed to read CSV mapping {csv_path}: {e}")
     return mapping
 
+def _get_protein_pockets(curated_results):
+    """Returns a dictionary mapping protein to a set of its unique pockets."""
+    protein_pockets = {}
+    for protein, pocket, _, _, _ in curated_results:
+        if protein not in protein_pockets:
+            protein_pockets[protein] = set()
+        if pocket != "N/A":
+            protein_pockets[protein].add(pocket)
+    return protein_pockets
+
+def _format_display_protein_pocket(protein, pocket, protein_to_name, protein_pockets):
+    """Formats the protein display name, only appending pocket info if the protein has multiple pockets."""
+    display_protein = protein_to_name.get(protein.lower(), protein)
+    return f"{display_protein}_pocket_{pocket}" if pocket != "N/A" and len(protein_pockets.get(protein, set())) > 1 else display_protein
+
 from contextlib import contextmanager
 
 @contextmanager
@@ -630,6 +645,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
     # Map CIDs and Proteins to standard names
     cid_to_name = _load_mapping_from_csv(ligand_names)
     protein_to_name = _load_mapping_from_csv(protein_names)
+    protein_pockets = _get_protein_pockets(results)
 
     # Set publication typography globally
     plt.rcParams.update({
@@ -663,8 +679,8 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         
         for (protein, pocket), target_results in targets.items():
             protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
-            display_protein = protein_to_name.get(protein.lower(), protein)
-            display_protein_pocket = f"{display_protein}_pocket_{pocket}" if pocket != "N/A" else display_protein
+            display_protein_pocket = _format_display_protein_pocket(protein, pocket, protein_to_name, protein_pockets)
+                
             protein_cif = Path(protein_clean_dir) / f"{protein}FH.cif"
             
             if not protein_cif.exists():
@@ -897,11 +913,12 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
         # Load mappings
         cid_to_name = _load_mapping_from_csv(ligand_names)
         protein_to_name = _load_mapping_from_csv(protein_names)
+        protein_pockets = _get_protein_pockets(curated_results)
         
         data = []
         for protein, pocket, ligand, run, energy in curated_results:
-            display_protein = protein_to_name.get(protein.lower(), protein)
-            protein_pocket = f"{display_protein}_pocket_{pocket}" if pocket != "N/A" else display_protein
+            protein_pocket = _format_display_protein_pocket(protein, pocket, protein_to_name, protein_pockets)
+                
             base_ligand = _get_base_ligand(ligand)
             is_positive_control = False
             if positive_control_map and base_ligand in positive_control_map:
