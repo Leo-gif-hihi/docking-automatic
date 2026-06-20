@@ -524,6 +524,14 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
     log_step(None, f"Generating PDB complex files for top {min(display_limit, len(results))} results...", color="white")
     
     complex_chain_mappings = {}
+    mapping_out_file = vis_dir / "final_chain_mapping.json"
+    if mapping_out_file.exists():
+        try:
+            with open(mapping_out_file, "r") as f:
+                complex_chain_mappings = json.load(f)
+        except Exception:
+            pass
+
     for row in results[:display_limit]:
         protein, pocket, ligand, run, energy = row[:5]
         protein_pocket_base = f"{protein}_pocket_{pocket}" if pocket != "N/A" else protein
@@ -535,6 +543,10 @@ def generate_complexes(results, output_dir, protein_clean_dir, display_limit=20)
         
         complex_pdb = vis_dir / f"{protein_pocket_base}_{ligand}_complex.pdb"
         
+        if complex_pdb.exists():
+            logging.info(f"Complex file {complex_pdb.name} already exists. Skipping.")
+            continue
+
         if not protein_cif.exists():
             logging.warning(f"Protein file missing: {protein_cif}. Skipping complex generation.")
             continue
@@ -741,10 +753,13 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
                             fp.run_from_iterable([poses[0]], protein_mol, progress=False)
                             
                             out_png = vis_dir / v_name / f"{display_protein_pocket}_{ligand}_prolif.png"
-                            try:
-                                _generate_network_plot(fp, poses[0], driver, out_png)
-                            except Exception as e:
-                                logging.error(f"Failed to generate {v_name} network plot for {protein_pocket_base}_{ligand}: {e}")
+                            if out_png.exists():
+                                logging.info(f"ProLif plot {out_png.name} already exists. Skipping.")
+                            else:
+                                try:
+                                    _generate_network_plot(fp, poses[0], driver, out_png)
+                                except Exception as e:
+                                    logging.error(f"Failed to generate {v_name} network plot for {protein_pocket_base}_{ligand}: {e}")
                             
                             df = fp.to_dataframe()
                             
