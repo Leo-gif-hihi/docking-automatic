@@ -379,7 +379,7 @@ def cluster_and_select_pocket(coords, scores, residue_ids, eps=10.0, min_samples
     
     return clusters
 
-def calculate_bounding_box(coords, padding=5.0):
+def calculate_bounding_box(coords, padding=7.0):
     """
     Calculates the spatial center and dimensions of the selected pocket in 3D space,
     adding the user-defined padding.
@@ -732,7 +732,7 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
                         logging.debug(f"Cluster {idx+1} Binding Pocket consists of {len(best_residues)} residues: {best_residues}")
                         
                         # Step 9: Bounding Box Calculation
-                        box_params = calculate_bounding_box(best_coords, padding=5.0)
+                        box_params = calculate_bounding_box(best_coords, padding=7.0)
                         logging.debug(f"Calculated Vina Grid Box {idx+1}: Center({box_params['center_x']:.2f}, {box_params['center_y']:.2f}, {box_params['center_z']:.2f}) | Dimensions({box_params['size_x']:.2f}, {box_params['size_y']:.2f}, {box_params['size_z']:.2f})")
                         
                         # Step 10: Volume Check & Dynamic Exhaustiveness
