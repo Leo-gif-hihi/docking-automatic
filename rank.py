@@ -958,8 +958,8 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
                 
             base_ligand = _get_base_ligand(ligand)
             is_positive_control = False
-            if positive_control_map and base_ligand in positive_control_map:
-                if protein in positive_control_map[base_ligand]:
+            if positive_control_map and base_ligand.lower() in positive_control_map:
+                if protein.lower() in positive_control_map[base_ligand.lower()]:
                     is_positive_control = True
                     
             if is_positive_control:

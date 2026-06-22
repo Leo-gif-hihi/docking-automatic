@@ -85,8 +85,8 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_run
         for box_file in box_files:
             for ligand_base in prepared_ligands:
                 base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
-                if positive_control_map and base_ligand in positive_control_map:
-                    if protein_base not in positive_control_map[base_ligand]:
+                if positive_control_map and base_ligand.lower() in positive_control_map:
+                    if protein_base.lower() not in positive_control_map[base_ligand.lower()]:
                         continue
                 for run_index in range(1, num_runs + 1):
                     yield protein_base, ligand_base, box_file, run_index
@@ -144,7 +144,7 @@ def main():
                         lig = row.get('ligand', '').strip()
                         prot = row.get('protein', '').strip()
                         if lig and prot:
-                            positive_control_map[lig].append(prot)
+                            positive_control_map[lig.lower()].append(prot.lower())
                 logging.info(f"Loaded positive control mapping from {args.positive_control}")
             except Exception as e:
                 logging.error(f"Error reading positive control file: {e}")
