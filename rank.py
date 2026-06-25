@@ -966,7 +966,8 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
                 data.append({
                     "Protein_pocket": protein_pocket,
                     "Ligand": "Positive Control",
-                    "Energy": mean_e
+                    "Energy": mean_e,
+                    "SD": sd_e
                 })
             else:
                 # Address user's feedback: _get_base_ligand retrieves the base string from curated_results.
@@ -975,7 +976,8 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
                 data.append({
                     "Protein_pocket": protein_pocket,
                     "Ligand": ligand_name,
-                    "Energy": mean_e
+                    "Energy": mean_e,
+                    "SD": sd_e
                 })
             
         df = pd.DataFrame(data)
@@ -1000,6 +1002,7 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
         
         # Pivot the dataframe to create a matrix for the heatmap
         heatmap_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='Energy', aggfunc='mean')
+        sd_data = df_filtered.pivot_table(index='Ligand', columns='Protein_pocket', values='SD', aggfunc='mean')
         
         # Replace positive docking scores (poor binding) with NaN to avoid skewing color scale
         import numpy as np
@@ -1014,19 +1017,37 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
             sorted_ligands.insert(0, "Positive Control")
             
         heatmap_data = heatmap_data.loc[sorted_ligands]
+        sd_data = sd_data.loc[sorted_ligands]
         
         # Sort X-axis (Proteins) by the overall best energy (excluding >= 0 scores)
         sorted_proteins = df_filtered[df_filtered['Energy'] < 0].groupby('Protein_pocket')['Energy'].mean().sort_values().index
         heatmap_data = heatmap_data[sorted_proteins]
+        sd_data = sd_data[sorted_proteins]
+        
+        # Create annotation matrix
+        annot_matrix = []
+        for row_idx in range(len(heatmap_data.index)):
+            annot_row = []
+            for col_idx in range(len(heatmap_data.columns)):
+                e_val = heatmap_data.iloc[row_idx, col_idx]
+                s_val = sd_data.iloc[row_idx, col_idx]
+                if pd.isna(e_val):
+                    annot_row.append("")
+                else:
+                    if pd.isna(s_val):
+                        annot_row.append(f"{e_val:.1f}")
+                    else:
+                        annot_row.append(f"{e_val:.1f}\n±{s_val:.1f}")
+            annot_matrix.append(annot_row)
         
         # Plot
         fig_width = max(10, len(heatmap_data.columns) * 1.5)
-        fig_height = max(8, len(heatmap_data.index) * 0.5)
+        fig_height = max(8, len(heatmap_data.index) * 0.75)
         
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         
         # We use a colormap where lower values (better affinity) are distinct.
-        sns.heatmap(heatmap_data, cmap='YlGnBu_r', annot=True, fmt=".1f", 
+        sns.heatmap(heatmap_data, cmap='YlGnBu_r', annot=annot_matrix, fmt="", 
                     cbar_kws={'label': 'Docking Score (kcal/mol)'},
                     linewidths=.5, ax=ax, 
                     mask=heatmap_data.isnull())  # Missing data is masked
