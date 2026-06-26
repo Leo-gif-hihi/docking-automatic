@@ -26,8 +26,8 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Automated Docking with AutoDock Vina")
     parser.add_argument("--protein_input", default="protein.txt", help="Text file containing list of protein PDB codes OR directory containing protein files")
     parser.add_argument("--ligand_dir", default="ligand", help="Directory containing ligand SDF files")
-    parser.add_argument("--ligand_names", type=str, default=None, help="Path to ligand names CSV file (default: ligand_dir/ligand_names.csv)")
-    parser.add_argument("--protein_names", type=str, default=None, help="Path to protein names CSV file")
+    parser.add_argument("--ligand_names", type=str, default=None, help="Path to ligand names CSV or XLSX file (default: ligand_dir/ligand_names.[csv|xlsx])")
+    parser.add_argument("--protein_names", type=str, default=None, help="Path to protein names CSV or XLSX file")
     parser.add_argument("--box_dir", default=None, help="Directory containing box TXT files (defaults: box_{protein_input})")
     parser.add_argument("--output_dir", default=None, help="Directory for output files (default: output_{protein_input}_{ligand_dir})")
     parser.add_argument("--cpus", type=int, default=0, help="Number of CPUs to use (default 0 means all CPUs)")
@@ -171,7 +171,10 @@ def main():
         args.box_dir = f"box_{protein_input_name}"
 
     if args.ligand_names is None:
-        args.ligand_names = str(Path(args.ligand_dir) / "ligand_names.csv")
+        if (Path(args.ligand_dir) / "ligand_names.xlsx").exists():
+            args.ligand_names = str(Path(args.ligand_dir) / "ligand_names.xlsx")
+        else:
+            args.ligand_names = str(Path(args.ligand_dir) / "ligand_names.csv")
 
     dirs_to_check = [args.output_dir, protein_clean_dir, ligand_prepared_dir]
     if not protein_input_path.is_dir():

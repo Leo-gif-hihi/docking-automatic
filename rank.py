@@ -102,31 +102,40 @@ def _get_base_ligand(ligand):
     """Extracts the base ligand name, ignoring isomer suffixes."""
     return ligand.split("_isomer_")[0] if "_isomer_" in ligand else ligand
 
-def _load_mapping_from_csv(csv_path=None):
-    """Loads a mapping from the first two columns of a provided CSV file."""
+def _load_mapping_from_file(file_path=None):
+    """Loads a mapping from the first two columns of a provided CSV or XLSX file."""
     import csv
     from pathlib import Path
     import logging
     
     mapping = {}
-    if not csv_path:
+    if not file_path:
         return mapping
         
-    path_obj = Path(csv_path)
+    path_obj = Path(file_path)
     if path_obj.exists():
         try:
-            with open(path_obj, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                f.seek(0)
-                delimiter = '\t' if '\t' in first_line else ','
-                reader = csv.reader(f, delimiter=delimiter)
-                for row in reader:
-                    if len(row) >= 2:
-                        key = row[0].strip().lower()
-                        val = row[1].strip()
+            if path_obj.suffix.lower() == '.xlsx':
+                import pandas as pd
+                df = pd.read_excel(path_obj, header=None)
+                for _, row in df.iterrows():
+                    if len(row) >= 2 and pd.notna(row[0]) and pd.notna(row[1]):
+                        key = str(row[0]).strip().lower()
+                        val = str(row[1]).strip()
                         mapping[key] = val
+            else:
+                with open(path_obj, 'r', encoding='utf-8') as f:
+                    first_line = f.readline()
+                    f.seek(0)
+                    delimiter = '\t' if '\t' in first_line else ','
+                    reader = csv.reader(f, delimiter=delimiter)
+                    for row in reader:
+                        if len(row) >= 2:
+                            key = row[0].strip().lower()
+                            val = row[1].strip()
+                            mapping[key] = val
         except Exception as e:
-            logging.warning(f"Failed to read CSV mapping {csv_path}: {e}")
+            logging.warning(f"Failed to read mapping file {file_path}: {e}")
     return mapping
 
 def _get_protein_pockets(curated_results):
@@ -323,8 +332,8 @@ def print_ranking(results, output_csv=None, ligand_names=None, protein_names=Non
     curated_results_with_stats.sort(key=lambda x: x[5])
 
     # Load mappings
-    cid_to_name = _load_mapping_from_csv(ligand_names)
-    protein_to_name = _load_mapping_from_csv(protein_names)
+    cid_to_name = _load_mapping_from_file(ligand_names)
+    protein_to_name = _load_mapping_from_file(protein_names)
 
     def format_row(row):
         protein, pocket, ligand, run, energy = row
@@ -677,8 +686,8 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
         return
 
     # Map CIDs and Proteins to standard names
-    cid_to_name = _load_mapping_from_csv(ligand_names)
-    protein_to_name = _load_mapping_from_csv(protein_names)
+    cid_to_name = _load_mapping_from_file(ligand_names)
+    protein_to_name = _load_mapping_from_file(protein_names)
     protein_pockets = _get_protein_pockets(results)
 
     # Set publication typography globally
@@ -948,8 +957,8 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
         import seaborn as sns
         
         # Load mappings
-        cid_to_name = _load_mapping_from_csv(ligand_names)
-        protein_to_name = _load_mapping_from_csv(protein_names)
+        cid_to_name = _load_mapping_from_file(ligand_names)
+        protein_to_name = _load_mapping_from_file(protein_names)
         protein_pockets = _get_protein_pockets(curated_results)
         
         data = []
