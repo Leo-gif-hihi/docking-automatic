@@ -1066,10 +1066,10 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
         cbar.ax.invert_yaxis()
         
         plt.title(f"Docking Scores Heatmap (Top {len(sorted_ligands)} Compounds)", pad=20, fontsize=14)
-        plt.xlabel("Protein / Pocket", fontsize=12)
-        plt.ylabel("Compound", fontsize=12)
-        plt.xticks(rotation=45, ha='right', fontsize=10)
-        plt.yticks(rotation=0, fontsize=10)
+        plt.xlabel("Protein / Pocket", fontsize=15)
+        plt.ylabel("Compound", fontsize=15)
+        plt.xticks(rotation=45, ha='right', fontsize=13)
+        plt.yticks(rotation=0, fontsize=13)
         plt.tight_layout()
         
         vis_dir = Path(output_dir) / "visualization"
