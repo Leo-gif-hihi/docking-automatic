@@ -613,6 +613,13 @@ def process_pockets(protein_path, box_path, output_dir="output", dock_all_pocket
     for i, protein_file in enumerate(protein_files, 1):
         log_step(None, f"Processing {i}/{total_proteins} proteins", color="white")
         logging.debug(f"\n--- Processing {protein_file.name} for pocket identification ---")
+        
+        protein_base = protein_file.stem[:-2] if protein_file.stem.endswith('FH') else protein_file.stem
+        existing_boxes = list(box_path.glob(f"{protein_base}*.box.txt"))
+        if existing_boxes:
+            log_step(None, f"Box files already exist for {protein_file.name}. Skipping pocket identification.")
+            continue
+
         chain_to_uniprot = extract_uniprot_ids_from_cif(str(protein_file))
         
         if not chain_to_uniprot:
