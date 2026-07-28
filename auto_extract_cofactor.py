@@ -6,6 +6,7 @@ import logging
 import gzip
 import shutil
 import time
+from functools import lru_cache
 
 def download_chebi_accession_file(filepath="database_accession.tsv"):
     """
@@ -124,6 +125,7 @@ def map_chebi_to_pdb(chebi_ids, filepath="database_accession.tsv"):
         
     return {k: list(v) for k, v in pdb_mapping.items() if v}
 
+@lru_cache(maxsize=None)
 def get_pdb_cofactors_for_uniprot(uniprot_id, filepath="database_accession.tsv"):
     """
     Orchestrates the overall process: downloads the database mapping file (if needed),
