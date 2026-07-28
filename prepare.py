@@ -198,6 +198,12 @@ def clean_global_mode(pdb_files, output_dir):
             continue
         structures.append((filepath, structure))
         all_hetatms.update(get_hetatms(structure))
+        suggested = get_suggested_cofactors(filepath)
+        filename = os.path.basename(filepath)
+        if not suggested:
+            log_step(None, f"Suggested cofactors for {filename}: None")
+        else:
+            log_step(None, f"Suggested cofactors for {filename}: {', '.join(suggested)}")
     
     if not all_hetatms:
         logging.debug("No HETATM residues found in any of the PDB files.")
@@ -242,6 +248,11 @@ def clean_local_mode(pdb_files, output_dir):
             log_step(None, "No HETATM residues found. Just cleaning water.")
             to_eliminate = []
         else:
+            suggested = get_suggested_cofactors(filepath)
+            if not suggested:
+                log_step(None, f"Suggested cofactors for {filename}: None")
+            else:
+                log_step(None, f"Suggested cofactors for {filename}: {', '.join(suggested)}")
             to_eliminate = prompt_elimination(file_hetatms)
             action_desc = "ALL HETATM residues in this file" if set(to_eliminate) == file_hetatms else ", ".join(to_eliminate)
             log_step(None, f"Action: Eliminating {action_desc}.")
