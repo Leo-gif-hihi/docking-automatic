@@ -123,12 +123,12 @@ def get_selection_string(to_eliminate, all_hetatms):
 
 def prompt_elimination(hetatms_set):
     """Prompts the user for which HETATMs to eliminate."""
-    logging.info(f"Found the following HETATM residues: {', '.join(hetatms_set)}")
-    logging.info("Which ones would you like to ELIMINATE?")
+    log_step(None, f"Found the following HETATM residues: {', '.join(hetatms_set)}")
+    log_step(None, "Which ones would you like to ELIMINATE?")
     try:
         user_input = input("Enter them separated by commas (type 'all' to delete all HETATM, press Enter to delete only water): ").strip()
     except KeyboardInterrupt:
-        logging.error("\n\nProcess interrupted by user (Ctrl+C). Exiting...")
+        log_step(None, "\n\nProcess interrupted by user (Ctrl+C). Exiting...")
         sys.exit(0)
         
     if user_input == "":
@@ -224,8 +224,8 @@ def clean_global_mode(pdb_files, output_dir):
 
 def clean_local_mode(pdb_files, output_dir):
     """Runs the cleaning process in local mode (prompt per file)."""
-    logging.info(f"Running in LOCAL mode. Scanning {len(pdb_files)} files individually.")
-    logging.info("Tip: You can press Ctrl+C at any prompt to escape and stop processing.\n")
+    log_step(None, f"Running in LOCAL mode. Scanning {len(pdb_files)} files individually.")
+    log_step(None, "Tip: You can press Ctrl+C at any prompt to escape and stop processing.\n")
     
     cleaned_paths = []
     file_stats = {}
@@ -236,15 +236,15 @@ def clean_local_mode(pdb_files, output_dir):
             continue
             
         file_hetatms = get_hetatms(structure)
-        logging.debug(f"--- {filename} ---")
+        log_step(None, f"--- {filename} ---")
         
         if not file_hetatms:
-            logging.debug("No HETATM residues found. Just cleaning water.")
+            log_step(None, "No HETATM residues found. Just cleaning water.")
             to_eliminate = []
         else:
             to_eliminate = prompt_elimination(file_hetatms)
             action_desc = "ALL HETATM residues in this file" if set(to_eliminate) == file_hetatms else ", ".join(to_eliminate)
-            logging.debug(f"Action: Eliminating {action_desc}.")
+            log_step(None, f"Action: Eliminating {action_desc}.")
             
         sel_str = get_selection_string(to_eliminate, file_hetatms)
         cleaned_pdb_path = clean_and_save_pdb(structure, filepath, output_dir, sel_str)
@@ -252,7 +252,7 @@ def clean_local_mode(pdb_files, output_dir):
             cleaned_paths.append(cleaned_pdb_path)
             
             file_stats[filename] = generate_file_stats(filepath, file_hetatms, to_eliminate)
-        logging.debug("")  # Blank line for readability between files if in debug mode
+        log_step(None, "")  # Blank line for readability between files if in debug mode
         
     return cleaned_paths, file_stats
 
