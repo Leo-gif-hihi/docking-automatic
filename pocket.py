@@ -223,10 +223,11 @@ def align_sequences(biolip_sequence, pdb_atom_sequence):
     aligner.extend_gap_score = -0.5
 
     alignments = aligner.align(biolip_sequence, pdb_atom_sequence)
-    if not alignments:
+    try:
+        best_alignment = next(iter(alignments))
+    except StopIteration:
         return None
         
-    best_alignment = alignments[0]
     return best_alignment
 
 def calculate_sequence_identity(best_alignment):
