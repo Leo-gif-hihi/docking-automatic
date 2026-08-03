@@ -938,7 +938,7 @@ def _generate_excel_summary(excel_data_rows, vis_dir):
     except Exception as e:
         logging.error(f"Failed to generate Excel summary: {e}")
 
-def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, protein_names=None, display_limit=20, positive_control_map=None):
+def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, protein_names=None, display_limit=20, positive_control_map=None, font="Times New Roman"):
     """
     Generates a heatmap of docking scores (affinity) for top compounds across different protein pockets.
     X-axis: Protein_pocket
@@ -955,12 +955,18 @@ def generate_ranking_heatmap(curated_results, output_dir, ligand_names=None, pro
         import pandas as pd
         import matplotlib.pyplot as plt
         import seaborn as sns
+        import matplotlib.font_manager as fm
         
-        # Force font to Times New Roman
-        plt.rcParams.update({
-            'font.family': 'serif',
-            'font.serif': ['Times New Roman']
-        })
+        # Check if the requested font exists
+        available_fonts = [f.name.lower() for f in fm.fontManager.ttflist]
+        if font.lower() not in available_fonts:
+            logging.warning(f"Font '{font}' not found. Matplotlib will use its default font.")
+        
+        # Suppress font fallback spam if the requested font is missing
+        logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+        
+        # Set font to user-selected font
+        plt.rcParams.update({'font.family': font})
         
         # Load mappings
         cid_to_name = _load_mapping_from_file(ligand_names)

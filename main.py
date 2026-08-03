@@ -42,6 +42,7 @@ def parse_args(args=None):
     parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
     parser.add_argument("--display_limit", type=int, default=20, help="Number of top compounds to display in visualization and heatmaps (default: 20)")
     parser.add_argument("--positive_control", type=str, default=None, help="Path to a CSV file containing 'ligand' and 'protein' columns to restrict docking to specific pairs. Ligands not in the CSV will dock to all proteins.")
+    parser.add_argument("--font", type=str, default="Liberation Serif", help="Font family for the generated ranking heatmap (default: Liberation Serif)")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -380,7 +381,7 @@ def main():
         visualize_prolif_results(curated_results, args.output_dir, protein_clean_dir, args.ligand_dir, display_limit=args.display_limit, ligand_names=args.ligand_names, protein_names=args.protein_names)
 
         # Generate Heatmap Visualization
-        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, protein_names=args.protein_names, display_limit=args.display_limit, positive_control_map=positive_control_map)
+        generate_ranking_heatmap(curated_results, args.output_dir, ligand_names=args.ligand_names, protein_names=args.protein_names, display_limit=args.display_limit, positive_control_map=positive_control_map, font=args.font)
     else:
         logging.warning("No valid curated results to generate complexes from.")
     
