@@ -58,6 +58,52 @@ def calculate_rmsd(ref_sdf, docked_sdf):
         logging.error(f"Error calculating RMSD: {e}")
         return None
 
+def generate_rmsd_plot(csv_path, output_dir):
+    """Generates a grouped bar chart of RMSD values across validation runs."""
+    try:
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        df = pd.read_csv(csv_path)
+        if df.empty:
+            return
+            
+        plt.figure(figsize=(max(10, len(df['Complex'].unique()) * 2), 6))
+        sns.set_theme(style="whitegrid")
+        
+        # Create a box plot to show the distribution of RMSD across runs for each complex
+        ax = sns.boxplot(
+            data=df,
+            x='Complex',
+            y='RMSD',
+            hue='Complex',
+            palette='viridis',
+            legend=False
+        )
+        
+        # Add a horizontal line at 2.0 Å threshold
+        plt.axhline(y=2.0, color='red', linestyle='--', linewidth=2, label='2.0 Å Threshold')
+        
+        plt.title('Validation RMSD Distribution per Complex', fontsize=16)
+        plt.xlabel('Complex', fontsize=14)
+        plt.ylabel('RMSD (Å)', fontsize=14)
+        plt.xticks(rotation=45, ha='right')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        
+        plot_path = Path(output_dir) / 'validation_visualization' / 'rmsd_plot.png'
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        from logger_utils import log_step
+        log_step("VALIDATION", f"RMSD box plot saved to {plot_path}", color="cyan")
+        
+    except ImportError:
+        logging.warning("Could not generate RMSD plot: pandas, matplotlib, or seaborn is not installed.")
+    except Exception as e:
+        logging.warning(f"Failed to generate RMSD plot: {e}")
+
 def run_validation_pipeline(args):
     """Runs the validation pipeline."""
     from main import generate_docking_jobs, run_docking_pipeline
@@ -353,9 +399,8 @@ def run_validation_pipeline(args):
                     f.write(f"center {docked_name}\n")
                     f.write(f"zoom {docked_name}, 10\n")
                     
-                    f.write(f"rms_cur {docked_name}, ref_ligand\n")
                     if rmsd is not None:
-                        f.write(f"echo Python RDKit RMSD: {rmsd:.3f} A\n")
+                        f.write(f"print('Python RDKit RMSD: {rmsd:.3f} A')\n")
 
     # Save RMSD results
     if rmsd_results:
@@ -365,5 +410,8 @@ def run_validation_pipeline(args):
             writer.writeheader()
             writer.writerows(rmsd_results)
         log_step("VALIDATION", f"Validation RMSD results saved to {csv_path}", color="green")
+        
+        # Generate the RMSD visualization plot
+        generate_rmsd_plot(csv_path, args.output_dir)
         
     log_step("VALIDATION", f"PyMOL visualization scripts have been saved to the '{val_vis_dir}' directory.", color="cyan")
