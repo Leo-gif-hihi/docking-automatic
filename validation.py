@@ -395,7 +395,7 @@ def run_validation_pipeline(args):
                 
             rmsd = calculate_rmsd(ref_ligand_sdf_path, docked_sdf)
             if rmsd is not None:
-                log_step("VALIDATION", f"[{actual_complex_base}] Run {run_index} RMSD: {rmsd:.3f} Å", color="green")
+                log_step("VALIDATION", f"[{protein_base}] Run {run_index} RMSD: {rmsd:.3f} Å", color="green")
                 rmsd_results.append({
                     'Complex': actual_complex_base,
                     'Ligand': ligand_base,
