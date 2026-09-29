@@ -419,10 +419,29 @@ def run_validation_pipeline(args):
                 chain = context['chain']
                 resi = context['resnum']
                 
+                # Extract top pose to a separate file for PyMOL
+                top_pose_sdf = complex_output_dir / f"{actual_complex_base}_{ligand_base}_top_pose.sdf"
+                try:
+                    supplier = Chem.SDMolSupplier(str(docked_sdf))
+                    if len(supplier) > 0 and supplier[0] is not None:
+                        writer = Chem.SDWriter(str(top_pose_sdf))
+                        writer.write(supplier[0])
+                        writer.close()
+                except Exception as e:
+                    logging.warning(f"Failed to extract top pose for PyMOL visualization: {e}")
+                    
                 with open(pml_script_path, "w") as f:
                     f.write(f"load {context['complex_path']}, {complex_name}\n")
                     f.write(f"load {ref_ligand_sdf_path.resolve()}, ref_ligand\n")
-                    f.write(f"load {docked_sdf.resolve()}, {docked_name}\n")
+                    
+                    # Load the newly extracted single-pose SDF
+                    if top_pose_sdf.exists():
+                        docked_name = top_pose_sdf.stem
+                        f.write(f"load {top_pose_sdf.resolve()}, {docked_name}\n")
+                    else:
+                        docked_name = docked_sdf.stem
+                        f.write(f"load {docked_sdf.resolve()}, {docked_name}\n")
+                    
                     f.write(f"hide everything\n")
                     f.write(f"show cartoon, {complex_name}\n")
                     f.write(f"color green, {complex_name}\n")
@@ -438,9 +457,6 @@ def run_validation_pipeline(args):
                     
                     if rmsd is not None:
                         f.write(f"print('Python RDKit RMSD: {rmsd:.3f} A')\n")
-                    
-                    # Also calculate the RMSD directly in PyMOL for the top-ranked pose (State 1)
-                    f.write(f"rms_cur {docked_name}, ref_ligand, 1, 1\n")
 
     # Save RMSD results
     if rmsd_results:
