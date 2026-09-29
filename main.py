@@ -20,6 +20,7 @@ from prepare import prepare_proteins, prepare_ligands
 from download_protein import download_proteins
 
 from p2rank import process_unprocessed_with_p2rank
+from validation import run_validation_pipeline
 
 def parse_args(args=None):
     """Handles argument parsing separately so it can be tested with mock lists of args."""
@@ -43,6 +44,7 @@ def parse_args(args=None):
     parser.add_argument("--display_limit", type=int, default=20, help="Number of top compounds to display in visualization and heatmaps (default: 20)")
     parser.add_argument("--positive_control", type=str, default=None, help="Path to a CSV file containing 'ligand' and 'protein' columns to restrict docking to specific pairs. Ligands not in the CSV will dock to all proteins.")
     parser.add_argument("--font", type=str, default="Liberation Serif", help="Font family for the generated ranking heatmap (default: Liberation Serif)")
+    parser.add_argument("--validate", action="store_true", help="Run the validation pipeline (calculates RMSD between docked output and original complex ligand)")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -133,6 +135,10 @@ def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, prot
 
 def main():
     args = parse_args()
+
+    if args.validate:
+        run_validation_pipeline(args)
+        return
 
     positive_control_map = None
     if args.positive_control:

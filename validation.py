@@ -1,0 +1,316 @@
+import os
+import sys
+import glob
+import time
+import shutil
+import logging
+import csv
+from pathlib import Path
+
+from prody import parsePDB, parseMMCIF, writePDB, writeMMCIF
+from rdkit import Chem
+from rdkit.Chem import rdMolAlign
+
+from logger_utils import log_step
+from prepare import prepare_proteins, prepare_ligands
+from download_protein import download_proteins
+
+
+def calculate_rmsd(ref_sdf, docked_sdf):
+    """Calculates the best RMSD between the reference ligand and docked poses."""
+    try:
+        ref_supplier = Chem.SDMolSupplier(str(ref_sdf))
+        ref_mol = ref_supplier[0] if len(ref_supplier) > 0 else None
+        
+        if not ref_mol:
+            logging.error(f"Could not read reference SDF: {ref_sdf}")
+            return None
+            
+        # Try to sanitize, sometimes PDB to SDF lacks proper sanitization
+        try:
+            Chem.SanitizeMol(ref_mol)
+        except:
+            pass
+
+        docked_supplier = Chem.SDMolSupplier(str(docked_sdf))
+        best_rmsd = None
+        
+        for idx, docked_pose in enumerate(docked_supplier):
+            if not docked_pose:
+                continue
+                
+            # Try to sanitize
+            try:
+                Chem.SanitizeMol(docked_pose)
+            except:
+                pass
+                
+            try:
+                # Use GetBestRMS to account for automorphisms/symmetry
+                rmsd = rdMolAlign.GetBestRMS(ref_mol, docked_pose)
+                if best_rmsd is None or rmsd < best_rmsd:
+                    best_rmsd = rmsd
+            except Exception as e:
+                logging.debug(f"RMSD calculation failed for pose {idx}: {e}")
+                
+        return best_rmsd
+    except Exception as e:
+        logging.error(f"Error calculating RMSD: {e}")
+        return None
+
+def run_validation_pipeline(args):
+    """Runs the validation pipeline."""
+    from main import generate_docking_jobs, run_docking_pipeline
+    
+    input_path = Path(args.protein_input)
+    
+    if input_path.is_dir():
+        protein_path = input_path
+    else:
+        protein_path = Path(input_path.stem)
+        if not protein_path.exists():
+            os.makedirs(protein_path, exist_ok=True)
+            log_step("WORKFLOW", f"Downloading proteins listed in {input_path}...")
+            download_proteins(str(input_path), str(protein_path))
+            
+    complex_files = list(protein_path.glob("*.pdb")) + list(protein_path.glob("*.cif"))
+        
+    if not complex_files:
+        logging.error(f"No valid complex files found in {protein_path}")
+        return
+        
+    if not args.output_dir:
+        output_base = protein_path.stem
+        args.output_dir = f"validation_output_{output_base}"
+        
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    temp_protein_dir = Path(args.output_dir) / "validation_protein_temp"
+    temp_ligand_dir = Path(args.output_dir) / "validation_ligand_temp"
+    box_dir = Path(args.output_dir) / "validation_box"
+    
+    os.makedirs(temp_protein_dir, exist_ok=True)
+    os.makedirs(temp_ligand_dir, exist_ok=True)
+    os.makedirs(box_dir, exist_ok=True)
+    
+    positive_control_map = {}
+    original_ligand_sdfs = {}
+    
+    rmsd_results = []
+    
+    for complex_file in complex_files:
+        log_step("VALIDATION", f"Processing {complex_file.name}...")
+        
+        # Parse the complex
+        try:
+            if complex_file.suffix.lower() == '.cif':
+                structure = parseMMCIF(str(complex_file))
+            else:
+                structure = parsePDB(str(complex_file))
+        except Exception as e:
+            logging.error(f"Failed to parse {complex_file}: {e}")
+            continue
+            
+        if not structure:
+            logging.error(f"Parsed structure is empty for {complex_file}")
+            continue
+            
+        # Find potential ligands (HETATM excluding water/ions)
+        hetatms = structure.select('not protein and not water and not ion')
+        if not hetatms:
+            logging.warning(f"No non-water/ion HETATMs found in {complex_file.name}. Skipping.")
+            continue
+            
+        # Get unique (chain, resnum, resname) instances
+        ligand_instances = list(set(zip(hetatms.getChids(), hetatms.getResnums(), hetatms.getResnames())))
+        # Sort them for deterministic ordering
+        ligand_instances.sort(key=lambda x: (x[0], x[1], x[2]))
+        
+        if not ligand_instances:
+            logging.warning(f"No valid ligand residues found in {complex_file.name}. Skipping.")
+            continue
+            
+        target_instances = []
+        if len(ligand_instances) > 1:
+            log_step("INTERACTIVE", f"Multiple ligand instances found in {complex_file.name}:")
+            print("0: Validate ALL ligands")
+            instance_strs = [f"{i+1}: Chain {chain}, Res {resnum} ({resname})" for i, (chain, resnum, resname) in enumerate(ligand_instances)]
+            for s in instance_strs:
+                print(s)
+                
+            while True:
+                user_input = input("Enter the number of the ligand you want to validate (default 0): ").strip()
+                if not user_input:
+                    user_input = "0"
+                try:
+                    idx = int(user_input)
+                    if idx == 0:
+                        target_instances = ligand_instances
+                        break
+                    elif 1 <= idx <= len(ligand_instances):
+                        target_instances = [ligand_instances[idx - 1]]
+                        break
+                    else:
+                        print(f"Invalid selection. Please enter a number between 0 and {len(ligand_instances)}.")
+                except ValueError:
+                    print("Please enter a valid number.")
+        else:
+            target_instances = ligand_instances
+            log_step("VALIDATION", f"Auto-selected ligand: Chain {target_instances[0][0]}, Res {target_instances[0][1]} ({target_instances[0][2]})")
+            
+        complex_base = complex_file.stem
+        
+        for target_instance in target_instances:
+            target_chain, target_resnum, target_resname = target_instance
+                
+            # Extract ligand
+            ligand_sel = structure.select(f'chain {target_chain} and resnum {target_resnum} and resname {target_resname}')
+            ligand_base_name = f"{target_resname}_{target_chain}_{target_resnum}"
+            ligand_pdb_path = temp_ligand_dir / f"{ligand_base_name}.pdb"
+            writePDB(str(ligand_pdb_path), ligand_sel)
+            
+            # Convert ligand PDB to SDF using RDKit
+            ligand_sdf_path = temp_ligand_dir / f"{ligand_base_name}.sdf"
+            try:
+                mol = Chem.MolFromPDBFile(str(ligand_pdb_path), sanitize=False)
+                if mol:
+                    writer = Chem.SDWriter(str(ligand_sdf_path))
+                    writer.write(mol)
+                    writer.close()
+                    log_step("VALIDATION", f"Extracted ligand saved to {ligand_sdf_path}")
+                else:
+                    logging.error(f"RDKit failed to parse the extracted ligand PDB for {ligand_base_name}.")
+                    continue
+            except Exception as e:
+                logging.error(f"Error converting ligand PDB to SDF for {ligand_base_name}: {e}")
+                continue
+                
+            # Name the protein specifically for this ligand so they don't overwrite each other if doing all
+            specific_protein_base = f"{complex_base}_{ligand_base_name}" if len(target_instances) > 1 else complex_base
+            
+            # Extract protein (exclude the target ligand instance, keep other cofactors if needed)
+            protein_sel = structure.select(f'not (chain {target_chain} and resnum {target_resnum} and resname {target_resname})')
+            protein_cif_path = temp_protein_dir / f"{specific_protein_base}.cif"
+            writeMMCIF(str(protein_cif_path), protein_sel)
+            log_step("VALIDATION", f"Extracted protein saved to {protein_cif_path}")
+            
+            # Get box size from user
+            log_step("INTERACTIVE", f"We need the size of the box around {ligand_base_name}.")
+            box_size_input = input("Enter box size (default 20x20x20): ").strip()
+            
+            size_x = size_y = size_z = 20.0
+            if box_size_input:
+                parts = box_size_input.replace('x', ' ').replace(',', ' ').split()
+                try:
+                    if len(parts) == 1:
+                        size_x = size_y = size_z = float(parts[0])
+                    elif len(parts) == 3:
+                        size_x, size_y, size_z = map(float, parts)
+                    else:
+                        log_step("WARNING", "Invalid input format. Using default 20x20x20.")
+                except ValueError:
+                    log_step("WARNING", "Could not parse numbers. Using default 20x20x20.")
+                    
+            # Calculate ligand center
+            coords = ligand_sel.getCoords()
+            center_x, center_y, center_z = coords.mean(axis=0)
+            
+            # Write box file
+            box_file = box_dir / f"{specific_protein_base}.box.txt"
+            with open(box_file, 'w') as f:
+                f.write(f"center_x = {center_x:.3f}\n")
+                f.write(f"center_y = {center_y:.3f}\n")
+                f.write(f"center_z = {center_z:.3f}\n")
+                f.write(f"size_x = {size_x:.3f}\n")
+                f.write(f"size_y = {size_y:.3f}\n")
+                f.write(f"size_z = {size_z:.3f}\n")
+                f.write("exhaustiveness = 8\n") # Default
+                
+            log_step("VALIDATION", f"Created box file: {box_file}")
+            
+            # Update positive control map and original ligand sdfs
+            if ligand_base_name.lower() not in positive_control_map:
+                positive_control_map[ligand_base_name.lower()] = []
+            positive_control_map[ligand_base_name.lower()].append(specific_protein_base.lower())
+            
+            original_ligand_sdfs[ligand_base_name] = ligand_sdf_path
+        
+    # Prepare Protein
+    protein_clean_dir = Path(args.output_dir) / "validation_protein_prepared"
+    prepared_proteins = prepare_proteins(
+        input_dir=str(temp_protein_dir),
+        output_dir=str(protein_clean_dir),
+        mode=args.clean_mode,
+        skip_cofactor=args.skip_cofactor,
+        skip_minimization=args.skip_minimization
+    )
+    
+    # Prepare Ligand
+    ligand_prepared_dir = Path(args.output_dir) / "validation_ligand_prepared"
+    prepared_ligands = prepare_ligands(
+        ligand_path=str(temp_ligand_dir),
+        ph=args.ph,
+        output_dir=str(ligand_prepared_dir),
+        generate_isomers=args.generate_isomers
+    )
+    
+    # Docking
+    jobs_list = list(generate_docking_jobs(prepared_proteins, prepared_ligands, box_dir, args.num_runs, positive_control_map))
+    
+    # Filter jobs to only include the specific ligands we targeted in this validation run 
+    # (prevents leftover ligands from previous runs in the output dir from being docked)
+    valid_ligand_bases = set(original_ligand_sdfs.keys())
+    filtered_jobs = []
+    for job in jobs_list:
+        ligand_base = job[1]
+        base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
+        if base_ligand in valid_ligand_bases:
+            filtered_jobs.append(job)
+            
+    jobs_list = filtered_jobs
+    
+    total_jobs = len(jobs_list)
+    if total_jobs == 0:
+        logging.error("No valid docking jobs generated.")
+        return
+        
+    log_step("VALIDATION", f"Starting docking for {len(complex_files)} complexes...")
+    for i, (protein_base, ligand_base, box_file, run_index) in enumerate(jobs_list, 1):
+        protein_pdbqt = prepared_proteins.get(protein_base)
+        ligand_pdbqt = prepared_ligands.get(ligand_base)
+        
+        vina_out_dir = Path(args.output_dir) / "vina_output" / f"run_{run_index}"
+        complex_output_dir = vina_out_dir / f"{protein_base}_{ligand_base}"
+        os.makedirs(complex_output_dir, exist_ok=True)
+        
+        success = run_docking_pipeline(
+            protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir),
+            protein_base, ligand_base, run_index, args.cpus
+        )
+        
+        if success:
+            # Calculate RMSD
+            docked_sdf = complex_output_dir / f"{protein_base}_{ligand_base}_vina_out.sdf"
+            
+            base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
+            ref_ligand_sdf_path = original_ligand_sdfs.get(base_ligand)
+            
+            if not ref_ligand_sdf_path:
+                logging.error(f"Could not find reference ligand SDF for {base_ligand}")
+                continue
+                
+            rmsd = calculate_rmsd(ref_ligand_sdf_path, docked_sdf)
+            if rmsd is not None:
+                log_step("VALIDATION", f"[{protein_base}] Run {run_index} RMSD: {rmsd:.3f} Å", color="green")
+                rmsd_results.append({
+                    'Complex': protein_base,
+                    'Ligand': ligand_base,
+                    'Run': run_index,
+                    'RMSD': rmsd
+                })
+            else:
+                log_step("WARNING", f"Failed to calculate RMSD for Run {run_index}.", color="yellow")
+                
+    # Save RMSD results
+    if rmsd_results:
+        csv_path = Path(args.output_dir) / "validation_rmsd.csv"
