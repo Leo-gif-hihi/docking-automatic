@@ -68,16 +68,18 @@ def generate_rmsd_plot(csv_path, output_dir):
         df = pd.read_csv(csv_path)
         if df.empty:
             return
+        # Combine Complex and Ligand to create a unique identifier for each validation target
+        df['Target'] = df['Complex'] + "_" + df['Ligand'].str.replace('_isomer_0', '', regex=False)
             
-        plt.figure(figsize=(max(10, len(df['Complex'].unique()) * 2), 6))
+        plt.figure(figsize=(max(10, len(df['Target'].unique()) * 2), 6))
         sns.set_theme(style="whitegrid")
         
-        # Create a box plot to show the distribution of RMSD across runs for each complex
+        # Create a box plot to show the distribution of RMSD across runs for each target
         ax = sns.boxplot(
             data=df,
-            x='Complex',
+            x='Target',
             y='RMSD',
-            hue='Complex',
+            hue='Target',
             palette='viridis',
             legend=False
         )
@@ -85,8 +87,8 @@ def generate_rmsd_plot(csv_path, output_dir):
         # Add a horizontal line at 2.0 Å threshold
         plt.axhline(y=2.0, color='red', linestyle='--', linewidth=2, label='2.0 Å Threshold')
         
-        plt.title('Validation RMSD Distribution per Complex', fontsize=16)
-        plt.xlabel('Complex', fontsize=14)
+        plt.title('Validation RMSD Distribution per Target', fontsize=16)
+        plt.xlabel('Target', fontsize=14)
         plt.ylabel('RMSD (Å)', fontsize=14)
         plt.xticks(rotation=45, ha='right')
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
