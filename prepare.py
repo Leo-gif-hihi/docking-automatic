@@ -401,12 +401,17 @@ def run_reduce2(protein_path, protein_protonated):
                     matched_orig = np.array(matched_orig)
                     matched_prep = np.array(matched_prep)
                     
+                    initial_rmsd = np.sqrt(np.mean(np.sum((matched_prep - matched_orig) ** 2, axis=1)))
+                    
                     t = calcTransformation(matched_prep, matched_orig)
                     t.apply(prep)
                     writeMMCIF(str(protein_protonated), prep)
                     
+                    matched_prep_aligned = t.apply(matched_prep.copy())
+                    final_rmsd = np.sqrt(np.mean(np.sum((matched_prep_aligned - matched_orig) ** 2, axis=1)))
+                    
                     from logger_utils import log_step
-                    log_step("WORKFLOW", f"Realigned {protein_protonated} using {len(matched_orig)} matched CA atoms.", color="green")
+                    log_step("WORKFLOW", f"Realigned {protein_protonated} using {len(matched_orig)} matched CA atoms. RMSD before: {initial_rmsd:.3f} A -> after: {final_rmsd:.3f} A.", color="green")
                 else:
                     logging.warning(f"Could not realign {protein_protonated}: No matching C-alpha atoms found.")
             else:
