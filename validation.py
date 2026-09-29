@@ -187,6 +187,8 @@ def run_validation_pipeline(args):
             for s in instance_strs:
                 print(s)
                 
+            log_step("WARNING", "If you select a cofactor as a target, it will be completely removed from the protein structure during validation.", color="yellow")
+            
             while True:
                 user_input = input("Enter the number(s) of the ligand(s) you want to validate, separated by commas (default 0 for ALL): ").strip()
                 if not user_input:
@@ -221,6 +223,18 @@ def run_validation_pipeline(args):
             
         complex_base = complex_file.stem
         
+        # Build exclusion string for all targets to prepare protein ONCE
+        exclusion_clauses = []
+        for instance in target_instances:
+            c, r, n = instance
+            exclusion_clauses.append(f"(chain {c} and resnum {r} and resname {n})")
+        exclusion_str = " or ".join(exclusion_clauses)
+        
+        protein_sel = structure.select(f'not ({exclusion_str})')
+        protein_cif_path = temp_protein_dir / f"{complex_base}.cif"
+        writeMMCIF(str(protein_cif_path), protein_sel)
+        log_step("VALIDATION", f"Extracted protein (all targets removed) saved to {protein_cif_path}")
+        
         for target_instance in target_instances:
             target_chain, target_resnum, target_resname = target_instance
                 
@@ -246,14 +260,8 @@ def run_validation_pipeline(args):
                 logging.error(f"Error converting ligand PDB to SDF for {ligand_base_name}: {e}")
                 continue
                 
-            # Name the protein specifically for this ligand
+            # Name the protein specifically for this ligand (we will copy the prepared protein later)
             specific_protein_base = f"{complex_base}_{ligand_base_name}"
-            
-            # Extract protein (exclude the target ligand instance, keep other cofactors if needed)
-            protein_sel = structure.select(f'not (chain {target_chain} and resnum {target_resnum} and resname {target_resname})')
-            protein_cif_path = temp_protein_dir / f"{specific_protein_base}.cif"
-            writeMMCIF(str(protein_cif_path), protein_sel)
-            log_step("VALIDATION", f"Extracted protein saved to {protein_cif_path}")
             
             # Get box size from user
             log_step("INTERACTIVE", f"We need the size of the box around {ligand_base_name}.")
@@ -312,6 +320,18 @@ def run_validation_pipeline(args):
         skip_cofactor=args.skip_cofactor,
         skip_minimization=args.skip_minimization
     )
+    
+    # Duplicate prepared proteins for each specific ligand target so they have distinct boxes and jobs
+    new_prepared_proteins = {}
+    for specific_protein_base, context in validation_context.items():
+        complex_base = Path(context['complex_path']).stem
+        if complex_base in prepared_proteins:
+            orig_pdbqt = prepared_proteins[complex_base]
+            new_pdbqt = Path(orig_pdbqt).parent / f"{specific_protein_base}.pdbqt"
+            shutil.copy(orig_pdbqt, new_pdbqt)
+            new_prepared_proteins[specific_protein_base] = new_pdbqt
+    
+    prepared_proteins = new_prepared_proteins
     
     # Prepare Ligand
     ligand_prepared_dir = Path(args.output_dir) / "validation_ligand_prepared"
