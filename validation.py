@@ -88,13 +88,16 @@ def run_validation_pipeline(args):
     temp_protein_dir = Path(args.output_dir) / "validation_protein_temp"
     temp_ligand_dir = Path(args.output_dir) / "validation_ligand_temp"
     box_dir = Path(args.output_dir) / "validation_box"
+    val_vis_dir = Path(args.output_dir) / "validation_visualization"
     
     os.makedirs(temp_protein_dir, exist_ok=True)
     os.makedirs(temp_ligand_dir, exist_ok=True)
     os.makedirs(box_dir, exist_ok=True)
+    os.makedirs(val_vis_dir, exist_ok=True)
     
     positive_control_map = {}
     original_ligand_sdfs = {}
+    validation_context = {}
     
     rmsd_results = []
     
@@ -185,8 +188,8 @@ def run_validation_pipeline(args):
                 logging.error(f"Error converting ligand PDB to SDF for {ligand_base_name}: {e}")
                 continue
                 
-            # Name the protein specifically for this ligand so they don't overwrite each other if doing all
-            specific_protein_base = f"{complex_base}_{ligand_base_name}" if len(target_instances) > 1 else complex_base
+            # Name the protein specifically for this ligand
+            specific_protein_base = f"{complex_base}_{ligand_base_name}"
             
             # Extract protein (exclude the target ligand instance, keep other cofactors if needed)
             protein_sel = structure.select(f'not (chain {target_chain} and resnum {target_resnum} and resname {target_resname})')
@@ -234,6 +237,13 @@ def run_validation_pipeline(args):
             positive_control_map[ligand_base_name.lower()].append(specific_protein_base.lower())
             
             original_ligand_sdfs[ligand_base_name] = ligand_sdf_path
+            
+            validation_context[specific_protein_base] = {
+                'complex_path': str(complex_file.resolve()),
+                'resname': target_resname,
+                'chain': target_chain,
+                'resnum': target_resnum
+            }
         
     # Prepare Protein
     protein_clean_dir = Path(args.output_dir) / "validation_protein_prepared"
@@ -279,18 +289,22 @@ def run_validation_pipeline(args):
         protein_pdbqt = prepared_proteins.get(protein_base)
         ligand_pdbqt = prepared_ligands.get(ligand_base)
         
+        base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
+        suffix = f"_{base_ligand}"
+        actual_complex_base = protein_base[:-len(suffix)] if protein_base.endswith(suffix) else protein_base
+        
         vina_out_dir = Path(args.output_dir) / "vina_output" / f"run_{run_index}"
-        complex_output_dir = vina_out_dir / f"{protein_base}_{ligand_base}"
+        complex_output_dir = vina_out_dir / f"{actual_complex_base}_{ligand_base}"
         os.makedirs(complex_output_dir, exist_ok=True)
         
         success = run_docking_pipeline(
             protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir),
-            protein_base, ligand_base, run_index, args.cpus
+            actual_complex_base, ligand_base, run_index, args.cpus
         )
         
         if success:
             # Calculate RMSD
-            docked_sdf = complex_output_dir / f"{protein_base}_{ligand_base}_vina_out.sdf"
+            docked_sdf = complex_output_dir / f"{actual_complex_base}_{ligand_base}_vina_out.sdf"
             
             base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
             ref_ligand_sdf_path = original_ligand_sdfs.get(base_ligand)
@@ -301,9 +315,9 @@ def run_validation_pipeline(args):
                 
             rmsd = calculate_rmsd(ref_ligand_sdf_path, docked_sdf)
             if rmsd is not None:
-                log_step("VALIDATION", f"[{protein_base}] Run {run_index} RMSD: {rmsd:.3f} Å", color="green")
+                log_step("VALIDATION", f"[{actual_complex_base}] Run {run_index} RMSD: {rmsd:.3f} Å", color="green")
                 rmsd_results.append({
-                    'Complex': protein_base,
+                    'Complex': actual_complex_base,
                     'Ligand': ligand_base,
                     'Run': run_index,
                     'RMSD': rmsd
@@ -311,6 +325,45 @@ def run_validation_pipeline(args):
             else:
                 log_step("WARNING", f"Failed to calculate RMSD for Run {run_index}.", color="yellow")
                 
+            # Generate PyMOL script
+            context = validation_context.get(protein_base)
+            if context and docked_sdf.exists():
+                pml_script_path = val_vis_dir / f"visualize_{actual_complex_base}_{ligand_base}_run{run_index}.pml"
+                
+                complex_name = Path(context['complex_path']).stem
+                docked_name = docked_sdf.stem
+                resn = context['resname']
+                chain = context['chain']
+                resi = context['resnum']
+                
+                with open(pml_script_path, "w") as f:
+                    f.write(f"load {context['complex_path']}, {complex_name}\n")
+                    f.write(f"load {ref_ligand_sdf_path.resolve()}, ref_ligand\n")
+                    f.write(f"load {docked_sdf.resolve()}, {docked_name}\n")
+                    f.write(f"hide everything\n")
+                    f.write(f"show cartoon, {complex_name}\n")
+                    f.write(f"color green, {complex_name}\n")
+                    
+                    f.write(f"show sticks, ref_ligand\n")
+                    f.write(f"color yellow, ref_ligand\n")
+                    
+                    f.write(f"show sticks, {docked_name}\n")
+                    f.write(f"color cyan, {docked_name}\n")
+                    
+                    f.write(f"center {docked_name}\n")
+                    f.write(f"zoom {docked_name}, 10\n")
+                    
+                    f.write(f"rms_cur {docked_name}, ref_ligand\n")
+                    if rmsd is not None:
+                        f.write(f"echo Python RDKit RMSD: {rmsd:.3f} A\n")
+
     # Save RMSD results
     if rmsd_results:
         csv_path = Path(args.output_dir) / "validation_rmsd.csv"
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['Complex', 'Ligand', 'Run', 'RMSD'])
+            writer.writeheader()
+            writer.writerows(rmsd_results)
+        log_step("VALIDATION", f"Validation RMSD results saved to {csv_path}", color="green")
+        
+    log_step("VALIDATION", f"PyMOL visualization scripts have been saved to the '{val_vis_dir}' directory.", color="cyan")
