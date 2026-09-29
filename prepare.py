@@ -349,6 +349,7 @@ def run_reduce2(protein_path, protein_protonated):
     """Runs mmtbx.reduce2 to add hydrogens and optimize the structure."""
     import subprocess
     from pathlib import Path
+    import logging
 
     if Path(protein_protonated).exists():
         logging.debug(f"Skipping REDUCE2: {protein_protonated} already exists.")
@@ -360,6 +361,59 @@ def run_reduce2(protein_path, protein_protonated):
     ]
     try:
         subprocess.run(cmd_reduce2, check=True, capture_output=True, text=True)
+        
+        # Reverse the translation/rotation introduced by reduce2
+        try:
+            from prody import parseMMCIF, writeMMCIF, calcTransformation, confProDy
+            confProDy(verbosity='none')
+            
+            # ProDy's CIF parser expects ATOM/HETATM to be at the start of the line.
+            # mmtbx.reduce2 adds leading spaces. We need to strip them.
+            with open(protein_protonated, 'r') as f:
+                lines = f.readlines()
+            with open(protein_protonated, 'w') as f:
+                for line in lines:
+                    if line.strip().startswith('ATOM') or line.strip().startswith('HETATM'):
+                        f.write(line.lstrip())
+                    else:
+                        f.write(line)
+                        
+            orig = parseMMCIF(str(protein_path))
+            prep = parseMMCIF(str(protein_protonated))
+            
+            orig_ca = orig.select('calpha')
+            prep_ca = prep.select('calpha')
+            
+            if orig_ca is not None and prep_ca is not None:
+                # Match atoms explicitly by chain, resnum, and name to handle reordering by reduce2
+                orig_dict = {(a.getChid(), a.getResnum(), a.getName()): a.getCoords() for a in orig_ca}
+                prep_dict = {(a.getChid(), a.getResnum(), a.getName()): a.getCoords() for a in prep_ca}
+                
+                matched_orig = []
+                matched_prep = []
+                for key in orig_dict:
+                    if key in prep_dict:
+                        matched_orig.append(orig_dict[key])
+                        matched_prep.append(prep_dict[key])
+                        
+                if len(matched_orig) > 0:
+                    import numpy as np
+                    matched_orig = np.array(matched_orig)
+                    matched_prep = np.array(matched_prep)
+                    
+                    t = calcTransformation(matched_prep, matched_orig)
+                    t.apply(prep)
+                    writeMMCIF(str(protein_protonated), prep)
+                    
+                    from logger_utils import log_step
+                    log_step("WORKFLOW", f"Realigned {protein_protonated} using {len(matched_orig)} matched CA atoms.", color="green")
+                else:
+                    logging.warning(f"Could not realign {protein_protonated}: No matching C-alpha atoms found.")
+            else:
+                logging.warning(f"Could not realign {protein_protonated}: Missing C-alpha atoms.")
+        except Exception as e:
+            logging.warning(f"Failed to realign {protein_protonated} after reduce2: {e}")
+            
         return True
     except subprocess.CalledProcessError as e:
         logging.error(f"REDUCE2 failed for {protein_path}:\n{e.stderr}")
