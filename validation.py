@@ -188,21 +188,33 @@ def run_validation_pipeline(args):
                 print(s)
                 
             while True:
-                user_input = input("Enter the number of the ligand you want to validate (default 0): ").strip()
+                user_input = input("Enter the number(s) of the ligand(s) you want to validate, separated by commas (default 0 for ALL): ").strip()
                 if not user_input:
                     user_input = "0"
+                
                 try:
-                    idx = int(user_input)
-                    if idx == 0:
+                    selected_indices = [int(x.strip()) for x in user_input.split(',')]
+                    
+                    if 0 in selected_indices:
                         target_instances = ligand_instances
                         break
-                    elif 1 <= idx <= len(ligand_instances):
-                        target_instances = [ligand_instances[idx - 1]]
+                    
+                    valid_selection = True
+                    temp_targets = []
+                    for idx in selected_indices:
+                        if 1 <= idx <= len(ligand_instances):
+                            temp_targets.append(ligand_instances[idx - 1])
+                        else:
+                            valid_selection = False
+                            break
+                            
+                    if valid_selection and temp_targets:
+                        target_instances = temp_targets
                         break
                     else:
-                        print(f"Invalid selection. Please enter a number between 0 and {len(ligand_instances)}.")
+                        print(f"Invalid selection. Please enter numbers between 0 and {len(ligand_instances)}.")
                 except ValueError:
-                    print("Please enter a valid number.")
+                    print("Please enter valid numbers separated by commas (e.g., 1, 3).")
         else:
             target_instances = ligand_instances
             log_step("VALIDATION", f"Auto-selected ligand: Chain {target_instances[0][0]}, Res {target_instances[0][1]} ({target_instances[0][2]})")
