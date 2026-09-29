@@ -33,27 +33,26 @@ def calculate_rmsd(ref_sdf, docked_sdf):
             pass
 
         docked_supplier = Chem.SDMolSupplier(str(docked_sdf))
-        best_rmsd = None
         
-        for idx, docked_pose in enumerate(docked_supplier):
-            if not docked_pose:
-                continue
-                
-            # Try to sanitize
-            try:
-                Chem.SanitizeMol(docked_pose)
-            except:
-                pass
-                
-            try:
-                # Use GetBestRMS to account for automorphisms/symmetry
-                rmsd = rdMolAlign.GetBestRMS(ref_mol, docked_pose)
-                if best_rmsd is None or rmsd < best_rmsd:
-                    best_rmsd = rmsd
-            except Exception as e:
-                logging.debug(f"RMSD calculation failed for pose {idx}: {e}")
-                
-        return best_rmsd
+        # Only evaluate the top-ranked pose (index 0)
+        top_pose = docked_supplier[0] if len(docked_supplier) > 0 else None
+        
+        if not top_pose:
+            logging.error(f"Could not read docked poses from: {docked_sdf}")
+            return None
+            
+        try:
+            Chem.SanitizeMol(top_pose)
+        except:
+            pass
+            
+        try:
+            # Use GetBestRMS to account for automorphisms/symmetry on the top pose
+            rmsd = rdMolAlign.GetBestRMS(ref_mol, top_pose)
+            return rmsd
+        except Exception as e:
+            logging.error(f"RMSD calculation failed for top pose: {e}")
+            return None
     except Exception as e:
         logging.error(f"Error calculating RMSD: {e}")
         return None
@@ -278,10 +277,14 @@ def run_validation_pipeline(args):
                     elif len(parts) == 3:
                         size_x, size_y, size_z = map(float, parts)
                     else:
-                        log_step("WARNING", "Invalid input format. Using default 20x20x20.")
+                        log_step("WARNING", "Invalid input format. Using default 20x20x20.", color="yellow")
                 except ValueError:
-                    log_step("WARNING", "Could not parse numbers. Using default 20x20x20.")
+                    log_step("WARNING", "Could not parse numbers. Using default 20x20x20.", color="yellow")
                     
+            if size_x <= 0 or size_y <= 0 or size_z <= 0:
+                log_step("WARNING", "Box size must be greater than 0. Falling back to default 20x20x20.", color="yellow")
+                size_x = size_y = size_z = 20.0
+                
             # Calculate ligand center
             coords = ligand_sel.getCoords()
             center_x, center_y, center_z = coords.mean(axis=0)
@@ -435,6 +438,9 @@ def run_validation_pipeline(args):
                     
                     if rmsd is not None:
                         f.write(f"print('Python RDKit RMSD: {rmsd:.3f} A')\n")
+                    
+                    # Also calculate the RMSD directly in PyMOL for the top-ranked pose (State 1)
+                    f.write(f"rms_cur {docked_name}, ref_ligand, 1, 1\n")
 
     # Save RMSD results
     if rmsd_results:
