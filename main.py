@@ -41,6 +41,7 @@ def parse_args(args=None):
     parser.add_argument("--generate_isomers", action="store_true", help="Generate acid-base and tautomer isomers during ligand preparation (default is to skip)")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
     parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
+    parser.add_argument("--exhaustiveness", type=int, default=8, help="Exhaustiveness of the global search (default: 8)")
     parser.add_argument("--display_limit", type=int, default=20, help="Number of top compounds to display in visualization and heatmaps (default: 20)")
     parser.add_argument("--positive_control", type=str, default=None, help="Path to a CSV file containing 'ligand' and 'protein' columns to restrict docking to specific pairs. Ligands not in the CSV will dock to all proteins.")
     parser.add_argument("--font", type=str, default="Liberation Serif", help="Font family for the generated ranking heatmap (default: Liberation Serif)")
@@ -94,7 +95,7 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_run
                 for run_index in range(1, num_runs + 1):
                     yield protein_base, ligand_base, box_file, run_index
 
-def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, run_index, cpus):
+def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, run_index, cpus, exhaustiveness=8):
     """Runs the docking pipeline for a single pair (already prepared)."""
     try:
         out_pdbqt = Path(output_dir) / f"{protein_base}_{ligand_base}_vina_out.pdbqt"
@@ -106,7 +107,8 @@ def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, prot
             "vina", "--receptor", str(protein_pdbqt),
             "--ligand", str(ligand_pdbqt),
             "--config", str(box_file),
-            "--out", str(out_pdbqt)
+            "--out", str(out_pdbqt),
+            "--exhaustiveness", str(exhaustiveness)
         ]
         if cpus > 0:
             cmd_vina.extend(["--cpu", str(cpus)])
@@ -356,7 +358,7 @@ def main():
                     
                 success = run_docking_pipeline(
                     protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
-                    protein_pocket_base, ligand_base, run_index, args.cpus
+                    protein_pocket_base, ligand_base, run_index, args.cpus, args.exhaustiveness
                 )
                 if not success:
                     error_jobs.append(f"{protein_base}\t{ligand_base}\tRun {run_index}\tDocking Failed")

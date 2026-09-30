@@ -382,7 +382,7 @@ def run_validation_pipeline(args):
         
         success = run_docking_pipeline(
             protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir),
-            actual_complex_base, ligand_base, run_index, args.cpus
+            actual_complex_base, ligand_base, run_index, args.cpus, args.exhaustiveness
         )
         
         if success:
