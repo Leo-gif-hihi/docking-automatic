@@ -481,14 +481,14 @@ def fix_cif_indentation(cif_path):
             else:
                 f.write(line)
 
-def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
+def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt, flex_res=None):
     """Runs mk_prepare_receptor.py (Meeko) to prepare the receptor."""
     import subprocess
     from pathlib import Path
+    import logging
 
-    if Path(protein_pdbqt).exists():
-        logging.debug(f"Skipping Meeko: {protein_pdbqt} already exists.")
-        return True
+    rigid_pdbqt = Path(str(protein_prep_out) + "_rigid.pdbqt") if flex_res else Path(protein_pdbqt)
+    flex_pdbqt = Path(str(protein_prep_out) + "_flex.pdbqt") if flex_res else None
         
     fix_cif_indentation(protein_protonated)
 
@@ -496,12 +496,47 @@ def run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
         "mk_prepare_receptor.py", "-i", str(protein_protonated), 
         "-o", str(protein_prep_out), "-p", "-a"
     ]
+    if flex_res:
+        # mk_prepare_receptor.py expects a single string of comma-separated residues without spaces.
+        # e.g., "A:315,B:100". It takes exactly ONE argument for -f.
+        # We remove '-f' in case the user accidentally included it in the CSV.
+        clean_flex = flex_res.replace('-f', '').replace(',', ' ')
+        flex_args = [res.strip() for res in clean_flex.split() if res.strip()]
+        if flex_args:
+            cmd_meeko.extend(["-f", ",".join(flex_args)])
+            
+            # Debug: print residue name and coordinates
+            try:
+                import numpy as np
+                from prody import parseMMCIF, parsePDB
+                
+                # Parse structure
+                if str(protein_protonated).lower().endswith('.cif'):
+                    struct = parseMMCIF(str(protein_protonated))
+                else:
+                    struct = parsePDB(str(protein_protonated))
+                    
+                if struct:
+                    for res_str in flex_args:
+                        parts = res_str.split(':')
+                        if len(parts) == 2:
+                            chain_id, res_num = parts[0], parts[1]
+                            sel = struct.select(f'chain {chain_id} and resnum {res_num}')
+                            if sel:
+                                res_name = sel.getResnames()[0]
+                                center = np.mean(sel.getCoords(), axis=0)
+                                print(f"[FLEX DEBUG] Residue {res_name} {res_str} Center: {center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}")
+                            else:
+                                print(f"[FLEX DEBUG] WARNING: Could not find residue {res_str} in structure.")
+            except Exception as e:
+                logging.warning(f"FLEX DEBUG: Failed to extract residue info: {e}")
+        
     try:
         subprocess.run(cmd_meeko, check=True, capture_output=True, text=True)
-        return True
+        return {"rigid": rigid_pdbqt, "flex": flex_pdbqt}
     except subprocess.CalledProcessError as e:
         logging.error(f"Meeko failed to prepare {protein_protonated}:\n{e.stderr}")
-        return False
+        return None
 
 def _extract_cif_loop(lines, loop_prefix):
     """Extracts a loop block from CIF lines based on a prefix (e.g., '_entity.')."""
@@ -878,8 +913,10 @@ def convert_pdb_to_cif(input_dir):
             except Exception as e:
                 logging.error(f"Error converting {pdb_path} to CIF: {e}")
 
-def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False):
+def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False, flex_res_map=None):
     """Main workflow to orchestrate the cleaning process."""
+    if flex_res_map is None:
+        flex_res_map = {}
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         logging.debug(f"Created output directory: {output_dir}")
@@ -1039,10 +1076,12 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
     # Phase 2: Meeko
     for item in phase15_results:
         protein_base, protein_protonated, protein_prep_out, protein_pdbqt = item
+        flex_res = flex_res_map.get(protein_base.lower())
         
         # 2. Preparing Receptor (Meeko)
-        if run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt):
-            prepared_results[protein_base] = protein_pdbqt
+        res = run_meeko_receptor(protein_protonated, protein_prep_out, protein_pdbqt, flex_res)
+        if res:
+            prepared_results[protein_base] = res
         else:
             logging.error(f"Failed to prepare receptor for {protein_base}. Skipping.")
         

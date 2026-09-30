@@ -316,6 +316,20 @@ def run_validation_pipeline(args):
                 'resnum': target_resnum
             }
         
+    # Load flex_res_map if it exists in args
+    flex_res_map = {}
+    if getattr(args, 'flex_res', None) and os.path.exists(args.flex_res):
+        try:
+            with open(args.flex_res, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    prot = row.get('protein', '').strip()
+                    flex = row.get('flex_res', '').strip()
+                    if prot and flex:
+                        flex_res_map[prot.lower()] = flex
+        except Exception as e:
+            logging.error(f"Error reading flexible residues file in validation: {e}")
+
     # Prepare Protein
     protein_clean_dir = Path(args.output_dir) / "validation_protein_prepared"
     prepared_proteins = prepare_proteins(
@@ -323,7 +337,8 @@ def run_validation_pipeline(args):
         output_dir=str(protein_clean_dir),
         mode=args.clean_mode,
         skip_cofactor=args.skip_cofactor,
-        skip_minimization=args.skip_minimization
+        skip_minimization=args.skip_minimization,
+        flex_res_map=flex_res_map
     )
     
     # Duplicate prepared proteins for each specific ligand target so they have distinct boxes and jobs
@@ -331,10 +346,22 @@ def run_validation_pipeline(args):
     for specific_protein_base, context in validation_context.items():
         complex_base = Path(context['complex_path']).stem
         if complex_base in prepared_proteins:
-            orig_pdbqt = prepared_proteins[complex_base]
-            new_pdbqt = Path(orig_pdbqt).parent / f"{specific_protein_base}.pdbqt"
-            shutil.copy(orig_pdbqt, new_pdbqt)
-            new_prepared_proteins[specific_protein_base] = new_pdbqt
+            orig_pdbqt_dict = prepared_proteins[complex_base]
+            new_pdbqt_dict = {}
+            
+            if orig_pdbqt_dict.get("rigid"):
+                orig_rigid = Path(orig_pdbqt_dict["rigid"])
+                new_rigid = orig_rigid.parent / (f"{specific_protein_base}_rigid.pdbqt" if orig_pdbqt_dict.get("flex") else f"{specific_protein_base}.pdbqt")
+                shutil.copy(orig_rigid, new_rigid)
+                new_pdbqt_dict["rigid"] = new_rigid
+                
+            if orig_pdbqt_dict.get("flex"):
+                orig_flex = Path(orig_pdbqt_dict["flex"])
+                new_flex = orig_flex.parent / f"{specific_protein_base}_flex.pdbqt"
+                shutil.copy(orig_flex, new_flex)
+                new_pdbqt_dict["flex"] = new_flex
+                
+            new_prepared_proteins[specific_protein_base] = new_pdbqt_dict
     
     prepared_proteins = new_prepared_proteins
     
@@ -369,7 +396,7 @@ def run_validation_pipeline(args):
         
     log_step("VALIDATION", f"Starting docking for {len(complex_files)} complexes...")
     for i, (protein_base, ligand_base, box_file, run_index) in enumerate(jobs_list, 1):
-        protein_pdbqt = prepared_proteins.get(protein_base)
+        protein_pdbqt_dict = prepared_proteins.get(protein_base)
         ligand_pdbqt = prepared_ligands.get(ligand_base)
         
         base_ligand = ligand_base.split("_isomer_")[0] if "_isomer_" in ligand_base else ligand_base
@@ -381,7 +408,7 @@ def run_validation_pipeline(args):
         os.makedirs(complex_output_dir, exist_ok=True)
         
         success = run_docking_pipeline(
-            protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir),
+            protein_pdbqt_dict, ligand_pdbqt, box_file, str(complex_output_dir),
             actual_complex_base, ligand_base, run_index, args.cpus, args.exhaustiveness
         )
         

@@ -46,6 +46,7 @@ def parse_args(args=None):
     parser.add_argument("--positive_control", type=str, default=None, help="Path to a CSV file containing 'ligand' and 'protein' columns to restrict docking to specific pairs. Ligands not in the CSV will dock to all proteins.")
     parser.add_argument("--font", type=str, default="Liberation Serif", help="Font family for the generated ranking heatmap (default: Liberation Serif)")
     parser.add_argument("--validate", action="store_true", help="Run the validation pipeline (calculates RMSD between docked output and original complex ligand)")
+    parser.add_argument("--flex_res", type=str, default=None, help="Path to a CSV file containing 'protein' and 'flex_res' columns to specify flexible residues (e.g., A:315). Proteins not in the CSV will be docked rigidly.")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -66,7 +67,7 @@ def setup_logging(output_dir):
 
     # 2. Console Handler: WARNING level for terminal (UI is handled by log_step)
     console_handler = RichHandler(rich_tracebacks=True, show_time=False, show_path=False)
-    console_handler.setLevel(logging.WARNING)
+    console_handler.setLevel(logging.DEBUG)
     console_format = logging.Formatter('%(message)s')
     console_handler.setFormatter(console_format)
     logger.addHandler(console_handler)
@@ -95,7 +96,7 @@ def generate_docking_jobs(prepared_proteins, prepared_ligands, box_path, num_run
                 for run_index in range(1, num_runs + 1):
                     yield protein_base, ligand_base, box_file, run_index
 
-def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, run_index, cpus, exhaustiveness=8):
+def run_docking_pipeline(protein_pdbqt_dict, ligand_pdbqt, box_file, output_dir, protein_base, ligand_base, run_index, cpus, exhaustiveness=8):
     """Runs the docking pipeline for a single pair (already prepared)."""
     try:
         out_pdbqt = Path(output_dir) / f"{protein_base}_{ligand_base}_vina_out.pdbqt"
@@ -104,12 +105,15 @@ def run_docking_pipeline(protein_pdbqt, ligand_pdbqt, box_file, output_dir, prot
 
         # 5. Running AutoDock Vina
         cmd_vina = [
-            "vina", "--receptor", str(protein_pdbqt),
+            "vina", "--receptor", str(protein_pdbqt_dict["rigid"]),
             "--ligand", str(ligand_pdbqt),
             "--config", str(box_file),
             "--out", str(out_pdbqt),
             "--exhaustiveness", str(exhaustiveness)
         ]
+        if protein_pdbqt_dict.get("flex"):
+            cmd_vina.extend(["--flex", str(protein_pdbqt_dict["flex"])])
+            
         if cpus > 0:
             cmd_vina.extend(["--cpu", str(cpus)])
             
@@ -141,6 +145,23 @@ def main():
     if args.validate:
         run_validation_pipeline(args)
         return
+
+    flex_res_map = {}
+    if args.flex_res:
+        if os.path.exists(args.flex_res):
+            try:
+                with open(args.flex_res, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        prot = row.get('protein', '').strip()
+                        flex = row.get('flex_res', '').strip()
+                        if prot and flex:
+                            flex_res_map[prot.lower()] = flex
+                logging.info(f"Loaded flexible residues mapping from {args.flex_res}")
+            except Exception as e:
+                logging.error(f"Error reading flexible residues file: {e}")
+        else:
+            logging.warning(f"Flexible residues file {args.flex_res} not found. Ignoring.")
 
     positive_control_map = None
     if args.positive_control:
@@ -231,7 +252,7 @@ def main():
     step_start = time.time()
     print()
     log_step("WORKFLOW", "Preparing proteins...")
-    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization)
+    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization, flex_res_map=flex_res_map)
     
     protein_clean_path = Path(protein_clean_dir)
     log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
@@ -348,16 +369,16 @@ def main():
                     error_jobs.append(f"{protein_base}\t{ligand_base}\tRun {run_index}\tMissing Box File")
                     continue
                     
-                protein_pdbqt = prepared_proteins.get(protein_base)
+                protein_pdbqt_dict = prepared_proteins.get(protein_base)
                 ligand_pdbqt = prepared_ligands.get(ligand_base)
                 
-                if not protein_pdbqt or not ligand_pdbqt:
+                if not protein_pdbqt_dict or not ligand_pdbqt:
                     logging.error(f"Error: Missing prepared files for {protein_base} or {ligand_base}. Skipping...")
                     error_jobs.append(f"{protein_base}\t{ligand_base}\tRun {run_index}\tPreparation Failed")
                     continue
                     
                 success = run_docking_pipeline(
-                    protein_pdbqt, ligand_pdbqt, box_file, str(complex_output_dir), 
+                    protein_pdbqt_dict, ligand_pdbqt, box_file, str(complex_output_dir), 
                     protein_pocket_base, ligand_base, run_index, args.cpus, args.exhaustiveness
                 )
                 if not success:
