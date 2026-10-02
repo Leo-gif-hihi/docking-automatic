@@ -264,43 +264,55 @@ def run_validation_pipeline(args):
             # Name the protein specifically for this ligand (we will copy the prepared protein later)
             specific_protein_base = f"{complex_base}_{ligand_base_name}"
             
-            # Get box size from user
-            log_step("INTERACTIVE", f"We need the size of the box around {ligand_base_name}.")
-            box_size_input = input("Enter box size (default 20x20x20): ").strip()
-            
-            size_x = size_y = size_z = 20.0
-            if box_size_input:
-                parts = box_size_input.replace('x', ' ').replace(',', ' ').split()
-                try:
-                    if len(parts) == 1:
-                        size_x = size_y = size_z = float(parts[0])
-                    elif len(parts) == 3:
-                        size_x, size_y, size_z = map(float, parts)
-                    else:
-                        log_step("WARNING", "Invalid input format. Using default 20x20x20.", color="yellow")
-                except ValueError:
-                    log_step("WARNING", "Could not parse numbers. Using default 20x20x20.", color="yellow")
-                    
-            if size_x <= 0 or size_y <= 0 or size_z <= 0:
-                log_step("WARNING", "Box size must be greater than 0. Falling back to default 20x20x20.", color="yellow")
-                size_x = size_y = size_z = 20.0
-                
-            # Calculate ligand center
-            coords = ligand_sel.getCoords()
-            center_x, center_y, center_z = coords.mean(axis=0)
-            
-            # Write box file
             box_file = box_dir / f"{specific_protein_base}.box.txt"
-            with open(box_file, 'w') as f:
-                f.write(f"center_x = {center_x:.3f}\n")
-                f.write(f"center_y = {center_y:.3f}\n")
-                f.write(f"center_z = {center_z:.3f}\n")
-                f.write(f"size_x = {size_x:.3f}\n")
-                f.write(f"size_y = {size_y:.3f}\n")
-                f.write(f"size_z = {size_z:.3f}\n")
-                f.write("exhaustiveness = 8\n") # Default
+            
+            custom_box_file = None
+            if getattr(args, 'box_dir', None):
+                potential_custom_box = Path(args.box_dir) / f"{specific_protein_base}.box.txt"
                 
-            log_step("VALIDATION", f"Created box file: {box_file}")
+                if potential_custom_box.exists():
+                    custom_box_file = potential_custom_box
+                    
+            if custom_box_file:
+                shutil.copy(custom_box_file, box_file)
+                log_step("VALIDATION", f"Using custom box file: {custom_box_file}")
+            else:
+                # Get box size from user
+                log_step("INTERACTIVE", f"We need the size of the box around {ligand_base_name}.")
+                box_size_input = input("Enter box size (default 20x20x20): ").strip()
+                
+                size_x = size_y = size_z = 20.0
+                if box_size_input:
+                    parts = box_size_input.replace('x', ' ').replace(',', ' ').split()
+                    try:
+                        if len(parts) == 1:
+                            size_x = size_y = size_z = float(parts[0])
+                        elif len(parts) == 3:
+                            size_x, size_y, size_z = map(float, parts)
+                        else:
+                            log_step("WARNING", "Invalid input format. Using default 20x20x20.", color="yellow")
+                    except ValueError:
+                        log_step("WARNING", "Could not parse numbers. Using default 20x20x20.", color="yellow")
+                        
+                if size_x <= 0 or size_y <= 0 or size_z <= 0:
+                    log_step("WARNING", "Box size must be greater than 0. Falling back to default 20x20x20.", color="yellow")
+                    size_x = size_y = size_z = 20.0
+                    
+                # Calculate ligand center
+                coords = ligand_sel.getCoords()
+                center_x, center_y, center_z = coords.mean(axis=0)
+                
+                # Write box file
+                with open(box_file, 'w') as f:
+                    f.write(f"center_x = {center_x:.3f}\n")
+                    f.write(f"center_y = {center_y:.3f}\n")
+                    f.write(f"center_z = {center_z:.3f}\n")
+                    f.write(f"size_x = {size_x:.3f}\n")
+                    f.write(f"size_y = {size_y:.3f}\n")
+                    f.write(f"size_z = {size_z:.3f}\n")
+                    f.write("exhaustiveness = 8\n") # Default
+                    
+                log_step("VALIDATION", f"Created box file: {box_file}")
             
             # Update positive control map and original ligand sdfs
             if ligand_base_name.lower() not in positive_control_map:
