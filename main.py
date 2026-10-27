@@ -39,6 +39,7 @@ def parse_args(args=None):
     parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
     parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water (default: keep cofactors, only delete water)")
     parser.add_argument("--generate_isomers", action="store_true", help="Generate acid-base and tautomer isomers during ligand preparation (default is to skip)")
+    parser.add_argument("--skip_pdbfixer", action="store_true", help="Skip PDBFixer step (do not rebuild missing heavy atoms in protein structures)")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
     parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
     parser.add_argument("--exhaustiveness", type=int, default=8, help="Exhaustiveness of the global search (default: 8)")
@@ -252,7 +253,7 @@ def main():
     step_start = time.time()
     print()
     log_step("WORKFLOW", "Preparing proteins...")
-    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization, flex_res_map=flex_res_map)
+    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization, flex_res_map=flex_res_map, skip_pdbfixer=args.skip_pdbfixer)
     
     protein_clean_path = Path(protein_clean_dir)
     log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")

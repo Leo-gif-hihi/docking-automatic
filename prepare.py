@@ -913,7 +913,7 @@ def convert_pdb_to_cif(input_dir):
             except Exception as e:
                 logging.error(f"Error converting {pdb_path} to CIF: {e}")
 
-def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False, flex_res_map=None):
+def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False, flex_res_map=None, skip_pdbfixer=False):
     """Main workflow to orchestrate the cleaning process."""
     if flex_res_map is None:
         flex_res_map = {}
@@ -1012,13 +1012,18 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
         logging.debug(f"Preparing receptor {cleaned_pdb_path}...")
 
         # 0. Rebuild Missing Heavy Atoms (PDBFixer)
-        if not run_pdbfixer(protein_path, protein_fixed):
-            logging.error(f"Failed to fix missing atoms for {protein_base}. Skipping.")
-            continue
+        if not skip_pdbfixer:
+            if not run_pdbfixer(protein_path, protein_fixed):
+                logging.error(f"Failed to fix missing atoms for {protein_base}. Skipping.")
+                continue
+            reduce_input = protein_fixed
+        else:
+            logging.debug(f"Skipping PDBFixer for {protein_base} as requested.")
+            reduce_input = protein_path
 
         # 1. Adding Hydrogens & Optimizing (REDUCE2)
-        # Note: We now pass 'protein_fixed' instead of 'protein_path'
-        if not run_reduce2(protein_fixed, protein_protonated):
+        # Note: We pass 'reduce_input' ('protein_fixed' or 'protein_path' if PDBFixer is skipped)
+        if not run_reduce2(reduce_input, protein_protonated):
             logging.error(f"Failed to protonate {protein_base}. Skipping.")
             continue
             
@@ -1320,7 +1325,17 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--input_dir", type=str, default="protein", help="Input directory containing PDB files.")
     parser.add_argument("-o", "--output_dir", type=str, default="protein-clean", help="Output directory for cleaned PDB files.")
     parser.add_argument("-m", "--mode", type=str, choices=["global", "local", "auto"], default="global", help="Elimination mode: 'global' applies to all files, 'local' asks for each file individually, 'auto' automatically keeps essential cofactors based on UniProt DB.")
+    parser.add_argument("--skip_pdbfixer", action="store_true", help="Skip PDBFixer step (do not rebuild missing heavy atoms).")
+    parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water.")
+    parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step.")
     
     args = parser.parse_args()
     
-    prepare_proteins(input_dir=args.input_dir, output_dir=args.output_dir, mode=args.mode)
+    prepare_proteins(
+        input_dir=args.input_dir, 
+        output_dir=args.output_dir, 
+        mode=args.mode,
+        skip_cofactor=args.skip_cofactor,
+        skip_minimization=args.skip_minimization,
+        skip_pdbfixer=args.skip_pdbfixer
+    )

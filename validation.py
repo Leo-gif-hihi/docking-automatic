@@ -350,7 +350,8 @@ def run_validation_pipeline(args):
         mode=args.clean_mode,
         skip_cofactor=args.skip_cofactor,
         skip_minimization=args.skip_minimization,
-        flex_res_map=flex_res_map
+        flex_res_map=flex_res_map,
+        skip_pdbfixer=getattr(args, 'skip_pdbfixer', False)
     )
     
     # Duplicate prepared proteins for each specific ligand target so they have distinct boxes and jobs
