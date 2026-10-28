@@ -425,6 +425,100 @@ def run_reduce2(protein_path, protein_protonated):
         return False
 
 
+def run_reduce(protein_path, protein_protonated):
+    """Runs classic MolProbity reduce to add hydrogens and optimize the structure.
+    Note: classic reduce only accepts PDB format, so mmCIF inputs are converted
+    to temporary PDB files for processing and converted back to mmCIF afterwards.
+    """
+    import subprocess
+    import shutil
+    import os
+    from pathlib import Path
+    import logging
+
+    if Path(protein_protonated).exists():
+        logging.debug(f"Skipping REDUCE: {protein_protonated} already exists.")
+        return True
+
+    reduce_bin = shutil.which("reduce") or "/usr/local/bin/reduce"
+    if not os.path.exists(reduce_bin) and not shutil.which("reduce"):
+        logging.error("classic reduce executable not found. Please install reduce or ensure it is on PATH.")
+        return False
+
+    protein_path = Path(protein_path)
+    protein_protonated = Path(protein_protonated)
+    temp_pdb_in = protein_path.parent / f"{protein_path.stem}_reduce_tmp_in.pdb"
+    temp_pdb_out = protein_path.parent / f"{protein_path.stem}_reduce_tmp_out.pdb"
+
+    try:
+        from prody import parseMMCIF, parsePDB, writePDB, writeMMCIF, confProDy
+        confProDy(verbosity='none')
+
+        # 1. Convert input to PDB format if it is mmCIF
+        if protein_path.suffix.lower() in [".cif", ".mmcif"]:
+            struct = parseMMCIF(str(protein_path))
+            if struct is None:
+                logging.error(f"Failed to parse input CIF {protein_path} for reduce.")
+                return False
+            writePDB(str(temp_pdb_in), struct)
+            pdb_input_file = temp_pdb_in
+        else:
+            pdb_input_file = protein_path
+
+        # 2. Build reduce command
+        # -BUILD: Add hydrogens, rotate/flip NQH groups
+        # -Nterm999: Ensure N-terminal protonation (H1, H2, H3) even when residue numbering does not begin at 1
+        cmd_reduce = [reduce_bin, "-BUILD", "-Nterm999"]
+        
+        # Check for Duke wwPDB HETATM dictionary
+        het_dict = os.environ.get("REDUCE_HET_DICT", "/usr/local/reduce_wwPDB_het_dict.txt")
+        if os.path.exists(het_dict):
+            cmd_reduce.extend(["-DB", het_dict])
+            
+        cmd_reduce.append(str(pdb_input_file))
+
+        # 3. Run reduce (outputs protonated PDB to stdout)
+        with open(temp_pdb_out, 'w') as out_f:
+            subprocess.run(cmd_reduce, stdout=out_f, stderr=subprocess.PIPE, text=True, check=True)
+
+        if not temp_pdb_out.exists() or temp_pdb_out.stat().st_size == 0:
+            logging.error(f"reduce produced an empty output file for {protein_path}.")
+            return False
+
+        # 4. Convert back to target format (mmCIF or PDB depending on protein_protonated extension)
+        if protein_protonated.suffix.lower() in [".cif", ".mmcif"]:
+            protonated_struct = parsePDB(str(temp_pdb_out))
+            if protonated_struct is None:
+                logging.error(f"Failed to parse reduce output PDB {temp_pdb_out}.")
+                return False
+            writeMMCIF(str(protein_protonated), protonated_struct)
+        else:
+            shutil.copyfile(str(temp_pdb_out), str(protein_protonated))
+
+        from logger_utils import log_step
+        log_step("WORKFLOW", f"Successfully protonated {protein_path.name} with classic reduce -> {protein_protonated.name}", color="green")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        logging.error(f"reduce failed for {protein_path}:\n{e.stderr}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error running reduce for {protein_path}: {e}")
+        return False
+    finally:
+        # Clean up temporary PDB files
+        if temp_pdb_in.exists() and temp_pdb_in != protein_path:
+            try:
+                temp_pdb_in.unlink()
+            except OSError:
+                pass
+        if temp_pdb_out.exists() and temp_pdb_out != protein_protonated:
+            try:
+                temp_pdb_out.unlink()
+            except OSError:
+                pass
+
+
 def run_openmm_minimization(protein_protonated, freeze_backbone=True):
     """Minimizes the structure using OpenMM, optionally freezing the backbone."""
     try:
@@ -913,7 +1007,7 @@ def convert_pdb_to_cif(input_dir):
             except Exception as e:
                 logging.error(f"Error converting {pdb_path} to CIF: {e}")
 
-def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False, flex_res_map=None, skip_pdbfixer=False):
+def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_minimization=False, flex_res_map=None, skip_pdbfixer=False, protonate_tool="reduce2"):
     """Main workflow to orchestrate the cleaning process."""
     if flex_res_map is None:
         flex_res_map = {}
@@ -1021,11 +1115,16 @@ def prepare_proteins(input_dir, output_dir, mode, skip_cofactor=False, skip_mini
             logging.debug(f"Skipping PDBFixer for {protein_base} as requested.")
             reduce_input = protein_path
 
-        # 1. Adding Hydrogens & Optimizing (REDUCE2)
+        # 1. Adding Hydrogens & Optimizing (REDUCE / REDUCE2)
         # Note: We pass 'reduce_input' ('protein_fixed' or 'protein_path' if PDBFixer is skipped)
-        if not run_reduce2(reduce_input, protein_protonated):
-            logging.error(f"Failed to protonate {protein_base}. Skipping.")
-            continue
+        if protonate_tool == "reduce":
+            if not run_reduce(reduce_input, protein_protonated):
+                logging.error(f"Failed to protonate {protein_base} using reduce. Skipping.")
+                continue
+        else:
+            if not run_reduce2(reduce_input, protein_protonated):
+                logging.error(f"Failed to protonate {protein_base} using reduce2. Skipping.")
+                continue
             
         phase1_results.append((protein_base, protein_protonated, protein_prep_out, protein_pdbqt))
 
@@ -1328,6 +1427,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_pdbfixer", action="store_true", help="Skip PDBFixer step (do not rebuild missing heavy atoms).")
     parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water.")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step.")
+    parser.add_argument("--protonate_tool", type=str, choices=["reduce2", "reduce"], default="reduce2", help="Tool for adding hydrogens: 'reduce2' (mmtbx.reduce2, default) or 'reduce' (classic MolProbity).")
     
     args = parser.parse_args()
     
@@ -1337,5 +1437,6 @@ if __name__ == "__main__":
         mode=args.mode,
         skip_cofactor=args.skip_cofactor,
         skip_minimization=args.skip_minimization,
-        skip_pdbfixer=args.skip_pdbfixer
+        skip_pdbfixer=args.skip_pdbfixer,
+        protonate_tool=args.protonate_tool
     )

@@ -48,6 +48,7 @@ def parse_args(args=None):
     parser.add_argument("--font", type=str, default="Liberation Serif", help="Font family for the generated ranking heatmap (default: Liberation Serif)")
     parser.add_argument("--validate", action="store_true", help="Run the validation pipeline (calculates RMSD between docked output and original complex ligand)")
     parser.add_argument("--flex_res", type=str, default=None, help="Path to a CSV file containing 'protein' and 'flex_res' columns to specify flexible residues (e.g., A:315). Proteins not in the CSV will be docked rigidly.")
+    parser.add_argument("--protonate_tool", type=str, choices=["reduce2", "reduce"], default="reduce2", help="Tool for adding hydrogens: 'reduce2' (mmtbx.reduce2, default) or 'reduce' (classic MolProbity).")
     return parser.parse_args(args)
 
 def setup_logging(output_dir):
@@ -253,7 +254,7 @@ def main():
     step_start = time.time()
     print()
     log_step("WORKFLOW", "Preparing proteins...")
-    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization, flex_res_map=flex_res_map, skip_pdbfixer=args.skip_pdbfixer)
+    prepared_proteins = prepare_proteins(input_dir=str(protein_path), output_dir=protein_clean_dir, mode=args.clean_mode, skip_cofactor=args.skip_cofactor, skip_minimization=args.skip_minimization, flex_res_map=flex_res_map, skip_pdbfixer=args.skip_pdbfixer, protonate_tool=args.protonate_tool)
     
     protein_clean_path = Path(protein_clean_dir)
     log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
