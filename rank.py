@@ -154,16 +154,103 @@ def _format_display_protein_pocket(protein, pocket, protein_to_name, protein_poc
     display_protein = protein_to_name.get(protein.lower(), protein)
     return f"{display_protein}_pocket_{pocket}" if pocket != "N/A" and len(protein_pockets.get(protein, set())) > 1 else display_protein
 
+def _extract_cif_author_residues(cif_path):
+    """
+    Extracts an ordered list of author residue metadata dicts from an mmCIF file:
+    [{'comp_id': ..., 'auth_asym_id': ..., 'auth_seq_id': int, 'label_asym_id': ..., 'label_seq_id': ...}, ...]
+    Returns None if any auth_seq_id is non-integer, negative, has an insertion code, or file is missing.
+    """
+    import logging
+    from pathlib import Path
+    
+    if not cif_path or not Path(cif_path).exists():
+        return None
+        
+    author_residues = []
+    seen = set()
+    
+    try:
+        with open(cif_path, 'r', encoding='utf-8', errors='ignore') as f:
+            in_atom_site = False
+            cols = []
+            for line in f:
+                line_str = line.strip()
+                if line_str.startswith("_atom_site."):
+                    in_atom_site = True
+                    cols.append(line_str.split()[0])
+                elif in_atom_site:
+                    if line_str.startswith(("ATOM", "HETATM")):
+                        parts = line_str.split()
+                        if len(parts) >= len(cols):
+                            col_map = {cols[i]: parts[i] for i in range(len(cols))}
+                            comp = col_map.get("_atom_site.label_comp_id") or col_map.get("_atom_site.auth_comp_id", "")
+                            l_asym = col_map.get("_atom_site.label_asym_id", "A")
+                            l_seq = col_map.get("_atom_site.label_seq_id", ".")
+                            a_asym = col_map.get("_atom_site.auth_asym_id", l_asym)
+                            a_seq = col_map.get("_atom_site.auth_seq_id", l_seq)
+                            ins_code = col_map.get("_atom_site.pdbx_PDB_ins_code", "?")
+                            
+                            res_key = (l_asym, l_seq) if l_seq not in [".", "?"] else (a_asym, a_seq, comp)
+                            if res_key not in seen:
+                                seen.add(res_key)
+                                has_ins_code = ins_code not in ["?", ".", ""]
+                                try:
+                                    auth_int = int(a_seq)
+                                    if auth_int < 0 or has_ins_code:
+                                        logging.warning(
+                                            f"Author residue numbering in {cif_path} contains insertion codes or negative numbers "
+                                            f"(residue {comp} {a_asym}:{a_seq}, ins: {ins_code}). Falling back to sequential numbering for ProLIF."
+                                        )
+                                        return None
+                                except ValueError:
+                                    logging.warning(
+                                        f"Author residue numbering in {cif_path} has non-integer auth_seq_id "
+                                        f"('{a_seq}' for {comp} {a_asym}). Falling back to sequential numbering for ProLIF."
+                                    )
+                                    return None
+                                    
+                                author_residues.append({
+                                    'comp_id': comp,
+                                    'auth_asym_id': a_asym,
+                                    'auth_seq_id': auth_int,
+                                    'label_asym_id': l_asym,
+                                    'label_seq_id': l_seq
+                                })
+                    elif line_str.startswith(("#", "loop_")) and len(author_residues) > 0:
+                        break
+    except Exception as e:
+        logging.warning(f"Failed to extract author residues from {cif_path}: {e}")
+        return None
+        
+    return author_residues if author_residues else None
+
 from contextlib import contextmanager
 
 @contextmanager
-def _prepare_prolif_protein(protein_cif):
-    """Context manager to convert CIF to PDB and yield a ProLIF Molecule."""
+def _prepare_prolif_protein(protein_cif, protein_name=None, protein_clean_dir=None):
+    """Context manager to convert CIF to PDB, assign author numbering/chains, and yield a ProLIF Molecule."""
     import tempfile
     import os
+    import logging
     from pathlib import Path
     import MDAnalysis as mda
     import prolif as plf
+    
+    protein_cif_path = Path(protein_cif)
+    
+    # Infer protein_name and protein_clean_dir if not explicitly provided
+    if not protein_name:
+        stem = protein_cif_path.stem
+        protein_name = stem[:-2] if stem.endswith("FH") else stem
+    if not protein_clean_dir:
+        protein_clean_dir = protein_cif_path.parent
+        
+    # Find reference CIF containing author residue numbering
+    ref_cif = Path(protein_clean_dir) / f"{protein_name}.cif"
+    if not ref_cif.exists():
+        ref_cif = protein_cif_path
+
+    author_residues = _extract_cif_author_residues(ref_cif)
     
     with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as tmp_pdb:
         tmp_prot_pdb = Path(tmp_pdb.name)
@@ -171,6 +258,73 @@ def _prepare_prolif_protein(protein_cif):
     try:
         _convert_to_pdb(protein_cif, "cif", tmp_prot_pdb)
         u = mda.Universe(str(tmp_prot_pdb))
+        
+        # Sanitize any missing/invalid element records from conversion (e.g. '*' for Calcium/metal ions)
+        for a in u.atoms:
+            if not a.element or a.element == '*':
+                clean_name = ''.join(c for c in a.name if c.isalpha()).upper()
+                res_upper = a.resname.strip().upper()
+                
+                # Disambiguate CA: C-alpha (Carbon) in amino acids vs Calcium (Ca) ion
+                if clean_name == 'CA':
+                    if res_upper in ['CA', 'CAL', 'CA2+']:
+                        a.element = 'Ca'
+                    else:
+                        a.element = 'C'
+                elif len(clean_name) >= 2 and clean_name[:2].capitalize() in ['Mg', 'Zn', 'Fe', 'Na', 'Cl', 'Mn', 'Cu']:
+                    a.element = clean_name[:2].capitalize()
+                elif clean_name:
+                    a.element = clean_name[:1].capitalize()
+                else:
+                    a.element = 'C'
+
+        # Apply author residue numbering and author chain IDs if valid
+        if author_residues:
+            if len(u.residues) == len(author_residues):
+                # Comprehensive canonical mapping for protonated (AMBER/CHARMM) & modified residues
+                canonical_map = {
+                    # Histidine protonation variants (AMBER & CHARMM)
+                    'HIE': 'HIS', 'HID': 'HIS', 'HIP': 'HIS',
+                    'HSD': 'HIS', 'HSE': 'HIS', 'HSP': 'HIS',
+                    # Cysteine variants (disulfide, deprotonated, oxidized)
+                    'CYX': 'CYS', 'CYM': 'CYS', 'CYF': 'CYS',
+                    'CSO': 'CYS', 'CME': 'CYS', 'OCS': 'CYS', 'CAS': 'CYS',
+                    # Glutamate & Aspartate neutral forms
+                    'GLH': 'GLU', 'GLUP': 'GLU',
+                    'ASH': 'ASP', 'ASPP': 'ASP',
+                    # Lysine, Arginine, Tyrosine protonation variants
+                    'LYN': 'LYS', 'LSN': 'LYS', 'MLY': 'LYS', 'MLZ': 'LYS',
+                    'ARN': 'ARG', 'TYM': 'TYR',
+                    # Common crystallographic / modified residues
+                    'MSE': 'MET', 'HYP': 'PRO', 'PCA': 'GLU',
+                    'SEP': 'SER', 'TPO': 'THR', 'PTR': 'TYR',
+                }
+
+                # Verify residue names match bidirectionally
+                name_mismatches = 0
+                for mda_res, cif_res in zip(u.residues, author_residues):
+                    mda_name = mda_res.resname.strip().upper()
+                    cif_name = cif_res['comp_id'].strip().upper()
+                    mda_canon = canonical_map.get(mda_name, mda_name)
+                    cif_canon = canonical_map.get(cif_name, cif_name)
+                    if mda_canon != cif_canon:
+                        name_mismatches += 1
+                        
+                if name_mismatches == 0:
+                    u.residues.resids = [r['auth_seq_id'] for r in author_residues]
+                    u.atoms.chainIDs = [author_residues[atom.residue.resindex]['auth_asym_id'] for atom in u.atoms]
+                    logging.info(f"Successfully applied author residue numbering (auth_seq_id/auth_asym_id) for {protein_name}.")
+                else:
+                    logging.warning(
+                        f"Residue name mismatch ({name_mismatches} residues) between PDB and CIF for {protein_name}. "
+                        "Falling back to default sequential numbering."
+                    )
+            else:
+                logging.warning(
+                    f"Residue count mismatch between PDB ({len(u.residues)}) and CIF ({len(author_residues)}) for {protein_name}. "
+                    "Falling back to default sequential numbering."
+                )
+
         protein_mol = plf.Molecule.from_mda(u)
         yield protein_mol
     finally:
@@ -737,7 +891,7 @@ def visualize_prolif_results(results, output_dir, protein_clean_dir, ligand_path
             ligand_labels_all = []
 
             try:
-                with _prepare_prolif_protein(protein_cif) as protein_mol:
+                with _prepare_prolif_protein(protein_cif, protein_name=protein, protein_clean_dir=protein_clean_dir) as protein_mol:
                     for row in target_results:
                         _, _, ligand, run, energy, mean_e, sd_e = row
                         ligand_sdf = Path(output_dir) / "vina_output" / f"run_{run}" / f"{protein_pocket_base}_{ligand}" / f"{protein_pocket_base}_{ligand}_vina_out.sdf"
