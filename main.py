@@ -39,6 +39,7 @@ def parse_args(args=None):
     parser.add_argument("--ph", type=float, default=7.4, help="pH value to prepare ligands (default: 7.4)")
     parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water (default: keep cofactors, only delete water)")
     parser.add_argument("--generate_isomers", action="store_true", help="Generate acid-base and tautomer isomers during ligand preparation (default is to skip)")
+    parser.add_argument("--scrub", action="store_true", help="Run scrub.py (Molscrub) during ligand preparation to regenerate and MMFF94-minimize 3D conformers (default is to skip scrub and preserve 3D coordinates)")
     parser.add_argument("--skip_pdbfixer", action="store_true", help="Skip PDBFixer step (do not rebuild missing heavy atoms in protein structures)")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step")
     parser.add_argument("--num_runs", type=int, default=3, help="Number of independent docking runs per complex (default: 3)")
@@ -264,7 +265,7 @@ def main():
     print()
     log_step("WORKFLOW", "Preparing ligands...")
     
-    prepared_ligands = prepare_ligands(ligand_path, args.ph, ligand_prepared_dir, generate_isomers=args.generate_isomers)
+    prepared_ligands = prepare_ligands(ligand_path, args.ph, ligand_prepared_dir, generate_isomers=args.generate_isomers, use_scrub=args.scrub)
         
     log_step("TIME", f"Step duration: {time.time() - step_start:.2f} seconds", color="cyan")
 

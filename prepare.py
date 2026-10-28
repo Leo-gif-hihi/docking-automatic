@@ -1292,11 +1292,14 @@ def preprocess_ligand(ligand_path, output_file):
     Pre-processes the ligand:
     - Chooses the largest fragment if there are multiple.
     - Sanitizes the molecule using RDKit.
-    - Relaxes the molecule using UFFOptimizeMolecule.
+    - Checks if the input molecule has 3D coordinates.
+    - Adds explicit hydrogens if missing (preserving 3D coordinates).
+    Returns (success: bool, is_2d: bool)
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
     import logging
+    import numpy as np
 
     try:
         suppl = Chem.SDMolSupplier(str(ligand_path), removeHs=False, sanitize=False)
@@ -1307,11 +1310,11 @@ def preprocess_ligand(ligand_path, output_file):
                 break
     except Exception as e:
         logging.error(f"Error opening molecule from {ligand_path}: {e}")
-        return False
+        return False, False
             
     if mol is None:
         logging.error(f"Could not read molecule from {ligand_path}")
-        return False
+        return False, False
 
     # Get fragments
     frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
@@ -1325,7 +1328,26 @@ def preprocess_ligand(ligand_path, output_file):
         Chem.SanitizeMol(mol)
     except Exception as e:
         logging.warning(f"Sanitization failed for {ligand_path.name}: {e}")
-        return False
+        return False, False
+
+    # Check if molecule is 2D
+    is_2d = False
+    if mol.GetNumConformers() == 0:
+        is_2d = True
+    else:
+        conf = mol.GetConformer()
+        if not conf.Is3D():
+            is_2d = True
+        else:
+            pos = conf.GetPositions()
+            if np.all(np.isclose(pos[:, 2], 0.0, atol=1e-3)):
+                is_2d = True
+
+    # Add hydrogens if missing, preserving existing 3D coordinates
+    try:
+        mol = Chem.AddHs(mol, addCoords=True)
+    except Exception as e:
+        logging.warning(f"Failed to add hydrogens for {ligand_path.name}: {e}")
 
     try:
         writer = Chem.SDWriter(str(output_file))
@@ -1333,13 +1355,13 @@ def preprocess_ligand(ligand_path, output_file):
         writer.close()
     except Exception as e:
         logging.error(f"Error writing preprocessed molecule to {output_file}: {e}")
-        return False
+        return False, False
 
-    return True
+    return True, is_2d
 
-def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomers: bool):
+def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomers: bool = False, use_scrub: bool = False):
     """
-    Prepares the ligand using Molscrub and Meeko.
+    Prepares the ligand using Meeko directly (default) or Molscrub and Meeko (when use_scrub=True).
     Returns the path to the resulting PDBQT file.
     """
     from pathlib import Path
@@ -1351,14 +1373,27 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomer
     ligand_dir = ligand_path.parent
     ligand_base = ligand_path.stem
 
-
     ligand_preprocessed = prepared_dir / f"{ligand_base}_preprocessed.sdf"
     ligand_scrubbed = prepared_dir / f"{ligand_base}_scrubbed.sdf"
 
-    # 2.5 Preprocessing Ligand (Largest fragment, Sanitize, relax)
-    if not preprocess_ligand(ligand_path, ligand_preprocessed):
+    # 2.5 Preprocessing Ligand (Largest fragment, Sanitize, add missing Hs, check 2D)
+    ok, is_2d = preprocess_ligand(ligand_path, ligand_preprocessed)
+    if not ok:
         logging.error(f"Preprocessing failed for {ligand_base}. Skipping.")
         return []
+
+    # Scrub decision logic:
+    # 1. Explicitly enabled via use_scrub
+    # 2. Auto-enabled if generate_isomers is requested
+    # 3. Auto-enabled if input molecule is 2D
+    should_scrub = use_scrub
+    if generate_isomers and not should_scrub:
+        logging.info(f"Automatically enabling scrub.py for {ligand_base} because isomer generation was requested.")
+        should_scrub = True
+
+    if is_2d and not should_scrub:
+        logging.warning(f"Ligand {ligand_base} has only 2D coordinates. Automatically running scrub.py to generate 3D conformers.")
+        should_scrub = True
 
     rdkit_headers = [
         'Ligand', 'Molecular Formula', 'SMILES', 'Heavy Atom Count', 'Formal Charge', 'MW', 
@@ -1379,6 +1414,14 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomer
         props = _calculate_rdkit_properties(ligand_file)
         writer.writerow([Path(ligand_file).stem] + props)
 
+    if not should_scrub:
+        # Default: Bypass Molscrub to preserve original 3D coordinates, run Meeko directly
+        pdbqt_files = []
+        ligand_pdbqt = prepared_dir / f"{ligand_base}.pdbqt"
+        if run_meeko_ligand(ligand_preprocessed, ligand_pdbqt):
+            pdbqt_files.append(ligand_pdbqt)
+        return pdbqt_files
+
     # 3. Scrubbing & Protonating Ligand (Molscrub)
     run_scrub_ligand(ligand_preprocessed, ligand_scrubbed, ph, generate_isomers)
 
@@ -1395,7 +1438,7 @@ def prepare_ligand(ligand_file: str, ph: float, output_dir: str, generate_isomer
 
     return pdbqt_files
 
-def prepare_ligands(ligand_path, ph, output_dir, generate_isomers=False):
+def prepare_ligands(ligand_path, ph, output_dir, generate_isomers=False, use_scrub=False):
     """
     Prepares all ligands in the given directory.
     Returns a dictionary mapping ligand names to their PDBQT paths.
@@ -1411,7 +1454,7 @@ def prepare_ligands(ligand_path, ph, output_dir, generate_isomers=False):
             
     prepared_ligands = {}
     for lig_file in Path(ligand_path).glob("*.sdf"):
-        lig_pdbqts = prepare_ligand(str(lig_file), ph, output_dir, generate_isomers)
+        lig_pdbqts = prepare_ligand(str(lig_file), ph, output_dir, generate_isomers=generate_isomers, use_scrub=use_scrub)
         for lig_pdbqt in lig_pdbqts:
             prepared_ligands[lig_pdbqt.stem] = lig_pdbqt
             
@@ -1427,6 +1470,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_pdbfixer", action="store_true", help="Skip PDBFixer step (do not rebuild missing heavy atoms).")
     parser.add_argument("--skip_cofactor", action="store_true", default=False, help="Delete all HETATM records instead of only water.")
     parser.add_argument("--skip_minimization", action="store_true", help="Skip energy minimization step.")
+    parser.add_argument("--scrub", action="store_true", help="Run scrub.py (Molscrub) during ligand preparation (default is to skip scrub and preserve 3D coordinates).")
     parser.add_argument("--protonate_tool", type=str, choices=["reduce2", "reduce"], default="reduce2", help="Tool for adding hydrogens: 'reduce2' (mmtbx.reduce2, default) or 'reduce' (classic MolProbity).")
     
     args = parser.parse_args()

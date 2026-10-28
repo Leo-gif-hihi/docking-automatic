@@ -385,7 +385,8 @@ def run_validation_pipeline(args):
         ligand_path=str(temp_ligand_dir),
         ph=args.ph,
         output_dir=str(ligand_prepared_dir),
-        generate_isomers=args.generate_isomers
+        generate_isomers=args.generate_isomers,
+        use_scrub=getattr(args, 'scrub', False)
     )
     
     # Docking
