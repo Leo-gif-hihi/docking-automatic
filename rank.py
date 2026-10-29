@@ -587,6 +587,18 @@ def _combine_complex_pdbs(prot_pdb, lig_pdb, complex_pdb, lig_chain):
                                 max_atom_serial = serial
                         except ValueError:
                             pass
+
+                        # Fix mislabeled Calcium converted from CIF with element '*' or unassigned
+                        if line.startswith("ATOM") and len(line) >= 20:
+                            res_name = line[17:20].strip().upper()
+                            atom_name = line[12:16].strip().upper()
+                            elem_sym = line[76:78].strip() if len(line) >= 78 else ""
+                            trailing = line[78:] if len(line) >= 78 else "\n"
+                            
+                            if res_name in ("CA", "CAL") and atom_name == "CA" and elem_sym in ("", "*"):
+                                base_content = line[16:76].ljust(60)
+                                line = "HETATM" + line[6:12] + "CA".ljust(4) + base_content + "CA".rjust(2) + trailing
+
                     out_f.write(line)
         # Write ligand, skipping CONECT lines and adding a chain ID
         with open(lig_pdb, 'r') as l_f:
